@@ -41,7 +41,8 @@ namespace PaintLike
         EyeOpen,
         EyeClosed,
         ZoomIn,
-        ZoomOut
+        ZoomOut,
+        Cube3D
     }
 
     public enum ButtonVariant
@@ -724,6 +725,20 @@ namespace PaintLike
                         g.DrawEllipse(pen, x + 1, y + 1, w - 5, h - 5);
                         g.DrawLine(pen, x + w - 5, y + h - 5, x + w - 1, y + h - 1);
                         g.DrawLine(pen, cx - 3.5f, cy - 1.5f, cx + 0.5f, cy - 1.5f);
+                        break;
+
+                    case IconType.Cube3D:
+                        PointF topPt = new PointF(cx, y + 1);
+                        PointF leftPt = new PointF(x + 1.5f, y + h * 0.28f);
+                        PointF rightPt = new PointF(x + w - 1.5f, y + h * 0.28f);
+                        PointF midPt = new PointF(cx, cy + 0.5f);
+                        PointF botLeft = new PointF(x + 1.5f, y + h * 0.75f);
+                        PointF botRight = new PointF(x + w - 1.5f, y + h * 0.75f);
+                        PointF botPt = new PointF(cx, y + h - 1);
+                        g.DrawPolygon(pen, new[] { topPt, rightPt, botRight, botPt, botLeft, leftPt });
+                        g.DrawLine(pen, leftPt, midPt);
+                        g.DrawLine(pen, rightPt, midPt);
+                        g.DrawLine(pen, botPt, midPt);
                         break;
                 }
             }

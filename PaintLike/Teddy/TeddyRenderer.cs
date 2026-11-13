@@ -232,8 +232,8 @@ namespace PaintLike.Teddy
             Vector3[] screenVerts,
             bool[] isFrontFacing)
         {
-            using (Pen silhouettePen = new Pen(Color.FromArgb(15, 23, 42), 2.8f))
-            using (Pen creasePen = new Pen(Color.FromArgb(90, 30, 41, 59), 1.1f))
+            using (Pen silhouettePen = new Pen(Color.FromArgb(30, 58, 95), 2.8f))
+            using (Pen creasePen = new Pen(Color.FromArgb(95, 51, 65, 85), 1.1f))
             {
                 silhouettePen.StartCap = LineCap.Round;
                 silhouettePen.EndCap = LineCap.Round;
@@ -273,8 +273,8 @@ namespace PaintLike.Teddy
             List<RenderTri> tris,
             PointF[] polyPts)
         {
-            using (SolidBrush faceBrush = new SolidBrush(Color.FromArgb(42, 30, 41, 59)))
-            using (Pen wirePen = new Pen(Color.FromArgb(130, 56, 189, 248), 1.0f))
+            using (SolidBrush faceBrush = new SolidBrush(Color.FromArgb(38, 79, 70, 229)))
+            using (Pen wirePen = new Pen(Color.FromArgb(145, 37, 99, 235), 1.0f))
             {
                 foreach (var rt in tris)
                 {
@@ -382,17 +382,17 @@ namespace PaintLike.Teddy
             }
             else
             {
-                // Nền Studio Dark hiện đại đồng bộ với MASTER.md
+                // Nền Bright Studio Light hiện đại đồng bộ với MASTER.md
                 using (LinearGradientBrush bg = new LinearGradientBrush(
                     new Rectangle(0, 0, Math.Max(1, viewport.Width), Math.Max(1, viewport.Height)),
-                    Color.FromArgb(15, 23, 42),
-                    Color.FromArgb(9, 13, 22),
+                    Color.FromArgb(248, 250, 252),
+                    Color.FromArgb(226, 232, 240),
                     LinearGradientMode.Vertical))
                 {
                     g.FillRectangle(bg, 0, 0, viewport.Width, viewport.Height);
                 }
 
-                using (Pen gridPen = new Pen(Color.FromArgb(22, 33, 54), 1f))
+                using (Pen gridPen = new Pen(Color.FromArgb(215, 224, 234), 1f))
                 {
                     int step = 40;
                     for (int x = 0; x < viewport.Width; x += step)
@@ -628,7 +628,7 @@ namespace PaintLike.Teddy
             Rectangle rect = new Rectangle((viewport.Width - w) / 2, 12, w, 54);
 
             using (GraphicsPath path = UITheme.CreateRoundedRect(rect, 8))
-            using (SolidBrush bg = new SolidBrush(Color.FromArgb(230, 15, 23, 42)))
+            using (SolidBrush bg = new SolidBrush(Color.FromArgb(245, 255, 255, 255)))
             using (Pen border = new Pen(Color.FromArgb(99, 102, 241), 1.5f))
             {
                 g.FillPath(bg, path);
@@ -637,12 +637,12 @@ namespace PaintLike.Teddy
 
             TextRenderer.DrawText(g, title, UITheme.FontSmallBold,
                 new Rectangle(rect.X + 12, rect.Y + 6, rect.Width - 24, 20),
-                Color.FromArgb(165, 180, 252),
+                UITheme.AccentPrimary,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
             TextRenderer.DrawText(g, subtitle, UITheme.FontSmall,
                 new Rectangle(rect.X + 12, rect.Y + 26, rect.Width - 24, 22),
-                Color.FromArgb(241, 245, 249),
+                UITheme.TextPrimary,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
     }

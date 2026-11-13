@@ -34,7 +34,7 @@ namespace PaintLike.Teddy
         private readonly List<PointF> _bendReferenceStroke = new List<PointF>();
         private bool _isDrawingStroke = false;
         private bool _isBaseRingFromCut = false;
-        private Color _surfacePaintColor = Color.FromArgb(30, 41, 59);
+        private Color _surfacePaintColor = Color.FromArgb(37, 99, 235);
         private Color _modelBaseColor = Color.FromArgb(244, 162, 97);
 
         // UI Controls
@@ -215,7 +215,7 @@ namespace PaintLike.Teddy
             {
                 Dock = DockStyle.Top,
                 Height = 36,
-                BackColor = Color.FromArgb(12, 18, 34)
+                BackColor = UITheme.BgPanelHeader
             };
             _panelAlgoStepBar.Paint += (s, e) =>
             {
@@ -228,7 +228,7 @@ namespace PaintLike.Teddy
                 AutoSize = true,
                 Location = new Point(12, 10),
                 Font = UITheme.FontGroupHeader,
-                ForeColor = UITheme.AccentPrimaryHover,
+                ForeColor = UITheme.AccentPrimary,
                 Text = "MẪU BÀI BÁO:"
             };
             _panelAlgoStepBar.Controls.Add(lblPresets);
@@ -420,11 +420,11 @@ namespace PaintLike.Teddy
             UITheme.DrawRibbonGroup(g, new Rectangle(360, 5, 344, 85), "CAMERA TRACKBALL & RENDER (TV3)");
             UITheme.DrawRibbonGroup(g, new Rectangle(712, 5, 204, 85), "XUẤT .OBJ & LAYER 2D");
 
-            // Bảng tóm tắt cử chỉ Hình 4 bên phải thanh công cụ
+            // Bảng tóm tắt cử chỉ Hình 4 bên phải thanh công cụ (Bright Studio Light)
             Rectangle helpRect = new Rectangle(924, 6, Math.Max(220, _panelTopRibbon.Width - 934), 83);
             using (GraphicsPath hp = UITheme.CreateRoundedRect(helpRect, 8))
-            using (SolidBrush hb = new SolidBrush(Color.FromArgb(20, 29, 47)))
-            using (Pen border = new Pen(Color.FromArgb(38, 52, 77), 1f))
+            using (SolidBrush hb = new SolidBrush(UITheme.BgPanelHeader))
+            using (Pen border = new Pen(UITheme.BorderSubtle, 1f))
             {
                 g.FillPath(hb, hp);
                 g.DrawPath(border, hp);
@@ -780,8 +780,8 @@ namespace PaintLike.Teddy
             Rectangle box = new Rectangle((vp.Width - boxW) / 2, (vp.Height - boxH) / 2, boxW, boxH);
 
             using (GraphicsPath path = UITheme.CreateRoundedRect(box, 12))
-            using (SolidBrush bg = new SolidBrush(Color.FromArgb(215, 15, 23, 42)))
-            using (Pen border = new Pen(Color.FromArgb(140, 99, 102, 241), 1.5f))
+            using (SolidBrush bg = new SolidBrush(Color.FromArgb(245, 255, 255, 255)))
+            using (Pen border = new Pen(Color.FromArgb(180, 99, 102, 241), 1.5f))
             {
                 g.FillPath(bg, path);
                 g.DrawPath(border, path);
@@ -793,12 +793,12 @@ namespace PaintLike.Teddy
 
             TextRenderer.DrawText(g, title, UITheme.FontSubtitle,
                 new Rectangle(box.X + 12, box.Y + 14, box.Width - 24, 24),
-                Color.FromArgb(129, 140, 248),
+                UITheme.AccentPrimary,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
             TextRenderer.DrawText(g, sub, UITheme.FontBody,
                 new Rectangle(box.X + 16, box.Y + 42, box.Width - 32, 56),
-                Color.FromArgb(226, 232, 240),
+                UITheme.TextSecondary,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
         }
 
