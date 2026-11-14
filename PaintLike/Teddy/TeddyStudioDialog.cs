@@ -34,6 +34,7 @@ namespace PaintLike.Teddy
         private readonly List<PointF> _bendReferenceStroke = new List<PointF>();
         private bool _isDrawingStroke = false;
         private bool _isBaseRingFromCut = false;
+        private bool _hasSentCurrentMeshToLayer = false;
         private Color _surfacePaintColor = Color.FromArgb(37, 99, 235);
         private Color _modelBaseColor = Color.FromArgb(244, 162, 97);
 
@@ -394,6 +395,7 @@ namespace PaintLike.Teddy
                 TeddyMeshOptimizer.ApplyPaperPresetPainting(created, presetKey);
                 _currentMesh = created;
                 _isBaseRingFromCut = false;
+                _hasSentCurrentMeshToLayer = false;
                 _gestureMode = TeddyGestureMode.Painting;
                 // Xoay nhẹ góc 3D để nhìn rõ độ phồng của mẫu bài báo
                 _camera.Rotation = Quaternion.CreateFromYawPitchRoll(0.32f, -0.18f, 0f);
@@ -533,7 +535,9 @@ namespace PaintLike.Teddy
                     PushUndoState();
                     _currentMesh = createdMesh;
                     _isBaseRingFromCut = false;
+                    _hasSentCurrentMeshToLayer = false;
                     _gestureMode = TeddyGestureMode.Painting;
+                    SetAlgorithmStepView(TeddyAlgorithmStepView.Final3DModel);
                     UpdateGestureModeState(msg);
                 }
                 else
@@ -857,9 +861,11 @@ namespace PaintLike.Teddy
             _camera.Rotation = Quaternion.CreateFromYawPitchRoll(0.35f, -0.25f, 0f);
             _bendReferenceStroke.Clear();
             _isBaseRingFromCut = false;
+            _hasSentCurrentMeshToLayer = false;
             _gestureMode = TeddyGestureMode.Painting;
             UITheme.SetButtonSelected(_btnBendMode, false);
             _btnModelColor.Invalidate();
+            SetAlgorithmStepView(TeddyAlgorithmStepView.Final3DModel);
             UpdateGestureModeState(message);
             _viewportPanel.Invalidate();
         }
@@ -918,6 +924,7 @@ namespace PaintLike.Teddy
         {
             _undoStack.Push(_currentMesh.Clone());
             _redoStack.Clear();
+            _hasSentCurrentMeshToLayer = false;
         }
 
         private void PerformUndo()
@@ -926,6 +933,7 @@ namespace PaintLike.Teddy
             _redoStack.Push(_currentMesh.Clone());
             _currentMesh = _undoStack.Pop();
             _bendReferenceStroke.Clear();
+            _hasSentCurrentMeshToLayer = false;
             UITheme.SetButtonSelected(_btnBendMode, false);
             _gestureMode = _currentMesh.IsEmpty ? TeddyGestureMode.Creation :
                 (_currentMesh.ActiveBaseRing != null ? TeddyGestureMode.Extrusion : TeddyGestureMode.Painting);
@@ -939,6 +947,7 @@ namespace PaintLike.Teddy
             _undoStack.Push(_currentMesh.Clone());
             _currentMesh = _redoStack.Pop();
             _bendReferenceStroke.Clear();
+            _hasSentCurrentMeshToLayer = false;
             UITheme.SetButtonSelected(_btnBendMode, false);
             _gestureMode = _currentMesh.IsEmpty ? TeddyGestureMode.Creation :
                 (_currentMesh.ActiveBaseRing != null ? TeddyGestureMode.Extrusion : TeddyGestureMode.Painting);
@@ -1028,8 +1037,11 @@ namespace PaintLike.Teddy
                     _currentMesh = ObjExporter.LoadFromFile(ofd.FileName);
                     _camera.Reset();
                     _bendReferenceStroke.Clear();
+                    _isBaseRingFromCut = false;
+                    _hasSentCurrentMeshToLayer = false;
                     UITheme.SetButtonSelected(_btnBendMode, false);
                     _gestureMode = TeddyGestureMode.Painting;
+                    SetAlgorithmStepView(TeddyAlgorithmStepView.Final3DModel);
                     UpdateGestureModeState($"Đã nạp file .OBJ thành công: {System.IO.Path.GetFileName(ofd.FileName)}");
                     _viewportPanel.Invalidate();
                 }
@@ -1086,7 +1098,45 @@ namespace PaintLike.Teddy
                 _renderStyle);
 
             _onInsertToLayer?.Invoke(snapshot, $"Teddy 3D ({_renderStyle})");
-            UpdateGestureModeState("Đã chèn hình chụp mô hình 3D (nền trong suốt) vào một Layer mới trong PaintLike!");
+            _hasSentCurrentMeshToLayer = true;
+            this.DialogResult = DialogResult.OK;
+            this.Close();
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            base.OnFormClosing(e);
+            if (e.Cancel) return;
+
+            if (!_currentMesh.IsEmpty && !_hasSentCurrentMeshToLayer && this.DialogResult != DialogResult.OK)
+            {
+                DialogResult result = MessageBox.Show(
+                    this,
+                    "Mô hình 3D hiện tại chưa được chèn về Layer 2D.\nBạn có muốn chèn mô hình 3D vào Layer 2D trước khi đóng cửa sổ 3D không?",
+                    "Xác nhận đóng 3D Studio",
+                    MessageBoxButtons.YesNoCancel,
+                    MessageBoxIcon.Question);
+
+                if (result == DialogResult.Cancel)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+
+                if (result == DialogResult.Yes)
+                {
+                    Bitmap snapshot = TeddyRenderer.RenderTransparentSnapshot(
+                        _viewportPanel.ClientSize.Width,
+                        _viewportPanel.ClientSize.Height,
+                        _currentMesh,
+                        _camera,
+                        _renderStyle);
+
+                    _onInsertToLayer?.Invoke(snapshot, $"Teddy 3D ({_renderStyle})");
+                    _hasSentCurrentMeshToLayer = true;
+                    this.DialogResult = DialogResult.OK;
+                }
+            }
         }
     }
 }

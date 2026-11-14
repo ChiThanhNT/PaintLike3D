@@ -58,8 +58,8 @@ namespace PaintLike.Teddy
                 return false;
             }
 
-            // Chọn độ dài cạnh chuẩn sao cho đa giác có khoảng 24 - 64 đỉnh biên
-            float targetEdgeLen = Math.Clamp(totalRawLen / 42f, 12f, 24f);
+            // Chọn độ dài cạnh chuẩn để giữ chi tiết tai/cuống/uốn lượn mà vẫn giữ lưới mượt
+            float targetEdgeLen = Math.Clamp(totalRawLen / 72f, 8f, 18f);
             List<PointF> uniformScreenPoly = StrokeProcessor.ResampleUniform(rawScreenStroke, targetEdgeLen, true);
 
             if (uniformScreenPoly.Count < 5)
@@ -236,6 +236,31 @@ namespace PaintLike.Teddy
 
             // Lưu các quạt tam giác (Fan regions) sinh ra sau khi cắt tỉa từ từng Terminal triangle (Hình 14)
             var fanConnections = new List<(int SpineVertex, int BoundA, int BoundB)>();
+            var encounteredJunctions = new HashSet<int>();
+            var junctionConsumedEdges = new HashSet<(int, int)>();
+
+            bool AreAllVerticesInSemicircle(int edgeU, int edgeV, List<int> verts, int extraVert)
+            {
+                Vector2 mid = 0.5f * (vertices2D[edgeU] + vertices2D[edgeV]);
+                float radius = 0.5f * Vector2.Distance(vertices2D[edgeU], vertices2D[edgeV]);
+                float maxDist = radius * 1.02f;
+
+                for (int k = 0; k < verts.Count; k++)
+                {
+                    int bv = verts[k];
+                    if (bv == edgeU || bv == edgeV) continue;
+                    if (Vector2.Distance(vertices2D[bv], mid) > maxDist)
+                        return false;
+                }
+
+                if (extraVert >= 0 && extraVert != edgeU && extraVert != edgeV)
+                {
+                    if (Vector2.Distance(vertices2D[extraVert], mid) > maxDist)
+                        return false;
+                }
+
+                return true;
+            }
 
             for (int tIdx = 0; tIdx < triCount; tIdx++)
             {
@@ -247,6 +272,7 @@ namespace PaintLike.Teddy
                 if (!TryGetTerminalInternalEdge(startTri, boundaryCount, out int u, out int v, out int tipVert, out int nextTriIdx))
                     continue;
 
+                pruned[tIdx] = true;
                 var regionBoundaryVerts = new List<int> { u, v, tipVert };
                 var regionBoundaryEdges = new List<(int A, int B)>();
                 AddBoundaryEdgesOfTri(startTri, boundaryCount, regionBoundaryEdges);
@@ -257,118 +283,105 @@ namespace PaintLike.Teddy
                 int candidateNextTri = nextTriIdx;
                 int stopJunctionTri = -1;
 
-                while (true)
+                if (!AreAllVerticesInSemicircle(currU, currV, regionBoundaryVerts, -1))
                 {
-                    Vector2 mid = 0.5f * (vertices2D[currU] + vertices2D[currV]);
-                    float radius = 0.5f * Vector2.Distance(vertices2D[currU], vertices2D[currV]);
-
-                    // Kiểm tra tất cả đỉnh của vùng đang gộp có nằm trong nửa đường tròn đường kính (currU, currV) không
-                    bool allInsideSemicircle = true;
-                    for (int k = 0; k < regionBoundaryVerts.Count; k++)
-                    {
-                        int bv = regionBoundaryVerts[k];
-                        if (bv == currU || bv == currV) continue;
-                        if (Vector2.Distance(vertices2D[bv], mid) > radius * 1.02f)
-                        {
-                            allInsideSemicircle = false;
-                            break;
-                        }
-                    }
-
-                    if (!allInsideSemicircle)
-                    {
-                        // Dừng tại cạnh trong (currU, currV) -> Hình 14c-d
-                        debugInfo.PruningCircles.Add((mid, radius, vertices2D[currU], vertices2D[currV]));
-                        break;
-                    }
-
-                    // Đánh dấu tam giác hiện tại đã được gộp
-                    pruned[currTriIdx] = true;
-
-                    if (candidateNextTri < 0 || pruned[candidateNextTri])
-                        break;
-
-                    Tri2D nextTri = cdtTris[candidateNextTri];
-                    if (nextTri.Category == TriangleCategory.Junction)
-                    {
-                        // Chạm tam giác ngã ba Junction -> Hình 14e-f
-                        stopJunctionTri = candidateNextTri;
-                        break;
-                    }
-
-                    if (nextTri.Category == TriangleCategory.Terminal)
-                    {
-                        // Toàn bộ đa giác chỉ gồm vài tam giác và chạm đáy bên kia
-                        pruned[candidateNextTri] = true;
-                        AddBoundaryEdgesOfTri(nextTri, boundaryCount, regionBoundaryEdges);
-                        break;
-                    }
-
-                    // Nếu là Sleeve triangle: mở rộng vùng sang Sleeve này (Hình 14b)
-                    int oppVert = nextTri.GetOppositeVertex(currU, currV);
-                    if (!regionBoundaryVerts.Contains(oppVert))
-                        regionBoundaryVerts.Add(oppVert);
-
-                    AddBoundaryEdgesOfTri(nextTri, boundaryCount, regionBoundaryEdges);
-
-                    // Tìm cạnh trong mới của Sleeve triangle
-                    if (Delaunay2D.IsBoundaryEdge(currU, oppVert, boundaryCount))
-                    {
-                        // (currU, oppVert) là cạnh biên => cạnh trong mới là (oppVert, currV)
-                        currU = oppVert;
-                    }
-                    else
-                    {
-                        // (currV, oppVert) là cạnh biên => cạnh trong mới là (currU, oppVert)
-                        currV = oppVert;
-                    }
-
-                    currTriIdx = candidateNextTri;
-                    candidateNextTri = FindNeighborAcrossEdge(cdtTris, currTriIdx, currU, currV);
-                }
-
-                // Nếu tam giác đầu tiên chưa kịp gộp (vì đỉnh lồi vượt nửa đường tròn ngay bước 1), vẫn gộp chính nó để tạo chóp quạt mượt
-                if (!pruned[tIdx])
-                {
-                    pruned[tIdx] = true;
-                }
-
-                // Xác định tâm quạt (Fan center): Tâm Junction (Hình 14f) hoặc Trung điểm cạnh trong dừng (Hình 14d)
-                int fanCenterVertex;
-                if (stopJunctionTri >= 0)
-                {
-                    pruned[stopJunctionTri] = true;
-                    fanCenterVertex = GetOrCreateJunctionCenter(stopJunctionTri);
-
-                    // Nối tâm Junction với trung điểm của 2 cạnh trong còn lại của Junction đó
-                    Tri2D jTri = cdtTris[stopJunctionTri];
-                    int[] jv = new int[] { jTri.V0, jTri.V1, jTri.V2 };
-                    for (int e = 0; e < 3; e++)
-                    {
-                        int ja = jv[e];
-                        int jb = jv[(e + 1) % 3];
-                        if ((ja == currU && jb == currV) || (ja == currV && jb == currU))
-                            continue;
-
-                        int neighborOfJ = jTri.Neighbors[e];
-                        if (neighborOfJ >= 0 && !pruned[neighborOfJ])
-                        {
-                            int midJEdge = GetOrCreateEdgeMidpoint(ja, jb);
-                            spineEdges.Add((fanCenterVertex, midJEdge));
-                            baseTriangles.Add(new BaseTri2D(fanCenterVertex, ja, midJEdge));
-                            baseTriangles.Add(new BaseTri2D(fanCenterVertex, midJEdge, jb));
-                        }
-                    }
+                    Vector2 mid0 = 0.5f * (vertices2D[currU] + vertices2D[currV]);
+                    float radius0 = 0.5f * Vector2.Distance(vertices2D[currU], vertices2D[currV]);
+                    debugInfo.PruningCircles.Add((mid0, radius0, vertices2D[currU], vertices2D[currV]));
                 }
                 else
                 {
-                    fanCenterVertex = GetOrCreateEdgeMidpoint(currU, currV);
+                    while (candidateNextTri >= 0)
+                    {
+                        Tri2D nextTri = cdtTris[candidateNextTri];
+                        if (nextTri.Category == TriangleCategory.Junction)
+                        {
+                            // Chạm tam giác ngã ba Junction -> Hình 14e-f (kể cả khi nhánh khác đã chạm Junction này)
+                            stopJunctionTri = candidateNextTri;
+                            pruned[candidateNextTri] = true;
+                            encounteredJunctions.Add(candidateNextTri);
+                            junctionConsumedEdges.Add((Math.Min(currU, currV), Math.Max(currU, currV)));
+                            break;
+                        }
+
+                        if (pruned[candidateNextTri])
+                            break;
+
+                        if (nextTri.Category == TriangleCategory.Terminal)
+                        {
+                            // Toàn bộ đa giác chỉ gồm vài tam giác và chạm đáy bên kia
+                            pruned[candidateNextTri] = true;
+                            AddBoundaryEdgesOfTri(nextTri, boundaryCount, regionBoundaryEdges);
+                            break;
+                        }
+
+                        // Sleeve triangle: kiểm tra nửa đường tròn trên cạnh trong kế tiếp TRƯỚC khi gộp (Hình 14b-d)
+                        int oppVert = nextTri.GetOppositeVertex(currU, currV);
+                        int candU, candV;
+                        if (Delaunay2D.IsBoundaryEdge(currU, oppVert, boundaryCount))
+                        {
+                            // (currU, oppVert) là cạnh biên => cạnh trong mới là (oppVert, currV)
+                            candU = oppVert;
+                            candV = currV;
+                        }
+                        else
+                        {
+                            // (currV, oppVert) là cạnh biên => cạnh trong mới là (currU, oppVert)
+                            candU = currU;
+                            candV = oppVert;
+                        }
+
+                        if (!AreAllVerticesInSemicircle(candU, candV, regionBoundaryVerts, oppVert))
+                        {
+                            Vector2 stopMid = 0.5f * (vertices2D[currU] + vertices2D[currV]);
+                            float stopRadius = 0.5f * Vector2.Distance(vertices2D[currU], vertices2D[currV]);
+                            debugInfo.PruningCircles.Add((stopMid, stopRadius, vertices2D[currU], vertices2D[currV]));
+                            break;
+                        }
+
+                        // Nửa đường tròn đạt chuẩn -> gộp chính thức Sleeve này vào vùng
+                        pruned[candidateNextTri] = true;
+                        if (!regionBoundaryVerts.Contains(oppVert))
+                            regionBoundaryVerts.Add(oppVert);
+                        AddBoundaryEdgesOfTri(nextTri, boundaryCount, regionBoundaryEdges);
+
+                        currU = candU;
+                        currV = candV;
+                        currTriIdx = candidateNextTri;
+                        candidateNextTri = FindNeighborAcrossEdge(cdtTris, currTriIdx, currU, currV);
+                    }
                 }
+
+                // Xác định tâm quạt (Fan center): Tâm Junction (Hình 14f) hoặc Trung điểm cạnh trong dừng (Hình 14d)
+                int fanCenterVertex = stopJunctionTri >= 0
+                    ? GetOrCreateJunctionCenter(stopJunctionTri)
+                    : GetOrCreateEdgeMidpoint(currU, currV);
 
                 // Tạo các tam giác hình quạt (Fan triangles) nối từ fanCenterVertex tới mọi cạnh biên trong vùng đã cắt tỉa
                 foreach (var bEdge in regionBoundaryEdges)
                 {
                     fanConnections.Add((fanCenterVertex, bEdge.A, bEdge.B));
+                }
+            }
+
+            // Sau khi cắt tỉa xong tất cả các nhánh Terminal, nối tâm Junction với các cạnh chưa bị quạt nhánh nào phủ
+            foreach (int jIdx in encounteredJunctions)
+            {
+                int fanCenterVertex = GetOrCreateJunctionCenter(jIdx);
+                Tri2D jTri = cdtTris[jIdx];
+                int[] jv = new int[] { jTri.V0, jTri.V1, jTri.V2 };
+                for (int e = 0; e < 3; e++)
+                {
+                    int ja = jv[e];
+                    int jb = jv[(e + 1) % 3];
+                    var edgeKey = (Math.Min(ja, jb), Math.Max(ja, jb));
+                    if (junctionConsumedEdges.Contains(edgeKey))
+                        continue;
+
+                    int midJEdge = GetOrCreateEdgeMidpoint(ja, jb);
+                    spineEdges.Add((fanCenterVertex, midJEdge));
+                    baseTriangles.Add(new BaseTri2D(fanCenterVertex, ja, midJEdge));
+                    baseTriangles.Add(new BaseTri2D(fanCenterVertex, midJEdge, jb));
                 }
             }
 

@@ -41,6 +41,7 @@ namespace PaintLike
 
         public event EventHandler? LayerSelectionChanged;
         public event EventHandler? LayersChanged;
+        public event EventHandler? BeforeLayerAction;
 
         public LayerPanel(List<Layer> layerList)
         {
@@ -359,12 +360,27 @@ namespace PaintLike
         {
             if (flowLayerItems == null || layers == null) return;
 
+            if (layers.Count > 0)
+            {
+                currentLayerIndex = Math.Max(0, Math.Min(currentLayerIndex, layers.Count - 1));
+            }
+            else
+            {
+                currentLayerIndex = 0;
+            }
+
             flowLayerItems.SuspendLayout();
-            flowLayerItems.Controls.Clear();
+            while (flowLayerItems.Controls.Count > 0)
+            {
+                Control oldCtrl = flowLayerItems.Controls[0];
+                flowLayerItems.Controls.RemoveAt(0);
+                oldCtrl.Dispose();
+            }
 
             int itemW = Math.Max(260, flowLayerItems.ClientSize.Width - 16);
 
-            for (int i = layers.Count - 1; i >= 0; i--)
+            // Index 0 là Layer trên cùng -> hiển thị ở đầu danh sách, khớp nút Lên/Xuống và thứ tự vẽ
+            for (int i = 0; i < layers.Count; i++)
             {
                 LayerItem layerItem = new LayerItem(layers[i])
                 {
@@ -409,6 +425,8 @@ namespace PaintLike
 
         private void BtnAddLayer_Click(object? sender, EventArgs e)
         {
+            BeforeLayerAction?.Invoke(this, EventArgs.Empty);
+
             string layerName = $"Layer {layers.Count + 1}";
             Layer newLayer = new Layer(layerName, canvasWidth, canvasHeight);
 
@@ -421,9 +439,25 @@ namespace PaintLike
 
         private void BtnDeleteLayer_Click(object? sender, EventArgs e)
         {
+            if (layers == null || layers.Count == 0) return;
+
+            BeforeLayerAction?.Invoke(this, EventArgs.Empty);
+
             if (layers.Count <= 1)
             {
-                MessageBox.Show("Phải giữ lại ít nhất 1 Layer trên vùng vẽ!", "Cảnh báo", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Layer onlyLayer = layers[0];
+                bool isBg = string.Equals(onlyLayer.Name, "Background", StringComparison.OrdinalIgnoreCase);
+                using (Graphics g = Graphics.FromImage(onlyLayer.Image))
+                {
+                    g.Clear(isBg ? Color.White : Color.Transparent);
+                }
+                onlyLayer.Name = "Background";
+                onlyLayer.Opacity = 255;
+                onlyLayer.IsVisible = true;
+                currentLayerIndex = 0;
+
+                RefreshLayerList();
+                LayersChanged?.Invoke(this, EventArgs.Empty);
                 return;
             }
 
@@ -445,6 +479,8 @@ namespace PaintLike
             // Trên UI, index 0 nằm trên cùng. "Lên" là giảm index về phía 0
             if (currentLayerIndex > 0)
             {
+                BeforeLayerAction?.Invoke(this, EventArgs.Empty);
+
                 Layer temp = layers[currentLayerIndex];
                 layers[currentLayerIndex] = layers[currentLayerIndex - 1];
                 layers[currentLayerIndex - 1] = temp;
@@ -460,6 +496,8 @@ namespace PaintLike
             // "Xuống" là tăng index về phía cuối danh sách
             if (currentLayerIndex < layers.Count - 1)
             {
+                BeforeLayerAction?.Invoke(this, EventArgs.Empty);
+
                 Layer temp = layers[currentLayerIndex];
                 layers[currentLayerIndex] = layers[currentLayerIndex + 1];
                 layers[currentLayerIndex + 1] = temp;
@@ -478,6 +516,7 @@ namespace PaintLike
                 string? newName = PromptDialog("Đặt tên mới cho Layer:", currentLayer.Name);
                 if (!string.IsNullOrWhiteSpace(newName))
                 {
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.Name = newName.Trim();
                     RefreshLayerList();
                     LayersChanged?.Invoke(this, EventArgs.Empty);
@@ -499,6 +538,7 @@ namespace PaintLike
                     v => $"{v}%",
                     out int selectedPct))
                 {
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.Opacity = (int)Math.Round(selectedPct / 100.0 * 255);
                     RefreshLayerList();
                     LayersChanged?.Invoke(this, EventArgs.Empty);
@@ -510,6 +550,8 @@ namespace PaintLike
         {
             if (currentLayerIndex >= 0 && currentLayerIndex < layers.Count)
             {
+                BeforeLayerAction?.Invoke(this, EventArgs.Empty);
+
                 Layer duplicatedLayer = layers[currentLayerIndex].Clone();
                 layers.Insert(currentLayerIndex, duplicatedLayer);
 
@@ -700,22 +742,34 @@ namespace PaintLike
             return currentLayerIndex;
         }
 
+        public void SetSelectedLayerIndex(int index)
+        {
+            if (layers == null || layers.Count == 0) return;
+            currentLayerIndex = Math.Max(0, Math.Min(index, layers.Count - 1));
+            RefreshLayerList();
+        }
+
         public void UpdateAllLayersSize(int newWidth, int newHeight)
         {
-            foreach (Layer layer in layers)
+            for (int i = 0; i < layers.Count; i++)
             {
+                Layer layer = layers[i];
                 if (layer.Image.Width != newWidth || layer.Image.Height != newHeight)
                 {
+                    bool isBackgroundBase = (i == layers.Count - 1) &&
+                                            string.Equals(layer.Name, "Background", StringComparison.OrdinalIgnoreCase);
+
                     Bitmap newBitmap = new Bitmap(newWidth, newHeight, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
                     using (Graphics g = Graphics.FromImage(newBitmap))
                     {
-                        g.Clear(Color.Transparent);
+                        g.Clear(isBackgroundBase ? Color.White : Color.Transparent);
                         g.DrawImage(layer.Image, 0, 0);
                     }
                     layer.Image.Dispose();
                     layer.Image = newBitmap;
                 }
             }
+            RefreshLayerThumbnails();
         }
 
         private void LblLayerTitle_MouseDown(object? sender, MouseEventArgs e)
@@ -741,8 +795,10 @@ namespace PaintLike
                 Control? parent = this.Parent;
                 if (parent != null)
                 {
-                    newLocation.X = Math.Max(0, Math.Min(newLocation.X, parent.ClientSize.Width - this.Width));
-                    newLocation.Y = Math.Max(0, Math.Min(newLocation.Y, parent.ClientSize.Height - this.Height));
+                    int minY = 108;
+                    int maxY = Math.Max(minY, parent.ClientSize.Height - this.Height - 30);
+                    newLocation.X = Math.Max(0, Math.Min(newLocation.X, Math.Max(0, parent.ClientSize.Width - this.Width)));
+                    newLocation.Y = Math.Max(minY, Math.Min(newLocation.Y, maxY));
                 }
 
                 this.Location = newLocation;
@@ -847,52 +903,65 @@ namespace PaintLike
             switch (cmb.SelectedIndex)
             {
                 case 1:
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.ApplyAntiAliasing("simple");
                     UpdateFilterStatus("✓ Đã áp dụng Anti-Aliasing (Simple Bilateral)");
                     break;
                 case 2:
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.ApplyAntiAliasing("advanced");
                     UpdateFilterStatus("✓ Đã áp dụng Anti-Aliasing (Advanced)");
                     break;
                 case 3:
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.ApplyAntiAliasing("curves");
                     UpdateFilterStatus("✓ Đã áp dụng Anti-Aliasing (Đường cong)");
                     break;
                 case 4:
                     ShowBrightnessDialog(currentLayer);
-                    break;
+                    RefreshLayerThumbnails();
+                    return;
                 case 5:
                     ShowContrastDialog(currentLayer);
-                    break;
+                    RefreshLayerThumbnails();
+                    return;
                 case 6:
                     ShowBlurDialog(currentLayer, false);
-                    break;
+                    RefreshLayerThumbnails();
+                    return;
                 case 7:
                     ShowBlurDialog(currentLayer, true);
-                    break;
+                    RefreshLayerThumbnails();
+                    return;
                 case 8:
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.ConvertToGrayscale();
                     UpdateFilterStatus("✓ Đã chuyển sang Trắng đen (Grayscale)");
                     break;
                 case 9:
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.DetectEdges();
                     UpdateFilterStatus("✓ Đã áp dụng Tách cạnh (Edge Detection)");
                     break;
                 case 10:
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.ApplySharpen(2);
                     UpdateFilterStatus("✓ Đã áp dụng Làm sắc nét (Sharpen)");
                     break;
                 case 11:
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.InvertColors();
                     UpdateFilterStatus("✓ Đã đảo ngược màu (Invert Colors)");
                     break;
                 case 12:
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.ApplySepia();
                     UpdateFilterStatus("✓ Đã áp dụng Màu cổ điển (Sepia)");
                     break;
                 case 13:
                     ShowSaturationDialog(currentLayer);
-                    break;
+                    RefreshLayerThumbnails();
+                    return;
                 default:
                     UpdateFilterStatus("⚠ Vui lòng chọn một bộ lọc từ danh sách!");
                     return;
@@ -915,41 +984,53 @@ namespace PaintLike
             switch (filterName)
             {
                 case "Grayscale":
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.ConvertToGrayscale();
                     UpdateFilterStatus("✓ Đã chuyển sang Trắng đen (Grayscale)");
                     break;
                 case "Sepia":
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.ApplySepia();
                     UpdateFilterStatus("✓ Đã áp dụng Màu cổ điển (Sepia)");
                     break;
                 case "Invert":
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.InvertColors();
                     UpdateFilterStatus("✓ Đã đảo ngược màu (Invert)");
                     break;
                 case "Edges":
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.DetectEdges();
                     UpdateFilterStatus("✓ Đã áp dụng Phát hiện cạnh (Edges)");
                     break;
                 case "AASimple":
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.ApplyAntiAliasing("simple");
                     UpdateFilterStatus("✓ Đã khử răng cưa nhanh (AA Simple)");
                     break;
                 case "Blur":
                     ShowBlurDialog(currentLayer, false);
-                    break;
+                    RefreshLayerThumbnails();
+                    return;
                 case "Sharpen":
+                    BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                     currentLayer.ApplySharpen(2);
                     UpdateFilterStatus("✓ Đã làm sắc nét (Sharpen)");
                     break;
                 case "Brightness":
                     ShowBrightnessDialog(currentLayer);
-                    break;
+                    RefreshLayerThumbnails();
+                    return;
                 case "Contrast":
                     ShowContrastDialog(currentLayer);
-                    break;
+                    RefreshLayerThumbnails();
+                    return;
                 case "Saturation":
                     ShowSaturationDialog(currentLayer);
-                    break;
+                    RefreshLayerThumbnails();
+                    return;
+                default:
+                    return;
             }
 
             RefreshLayerThumbnails();
@@ -965,6 +1046,7 @@ namespace PaintLike
                 v => v > 0 ? $"+{v}" : $"{v}",
                 out int val))
             {
+                BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                 currentLayer.ApplyBrightness(val);
                 UpdateFilterStatus($"✓ Đã áp dụng Độ sáng: {val}");
                 LayersChanged?.Invoke(this, EventArgs.Empty);
@@ -980,6 +1062,7 @@ namespace PaintLike
                 v => $"{(v / 10.0):F1}x",
                 out int val))
             {
+                BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                 double contrast = val / 10.0;
                 currentLayer.ApplyContrast(contrast);
                 UpdateFilterStatus($"✓ Đã áp dụng Tương phản: {contrast:F1}x");
@@ -997,6 +1080,7 @@ namespace PaintLike
                 v => $"Mức {v}",
                 out int val))
             {
+                BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                 if (isGaussian)
                 {
                     currentLayer.ApplyGaussianBlur(val);
@@ -1020,6 +1104,7 @@ namespace PaintLike
                 v => $"{(v / 10.0):F1}x",
                 out int val))
             {
+                BeforeLayerAction?.Invoke(this, EventArgs.Empty);
                 double saturation = val * 0.1;
                 currentLayer.AdjustSaturation(saturation);
                 UpdateFilterStatus($"✓ Đã áp dụng Bão hòa: {saturation:F1}x");

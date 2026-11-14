@@ -97,161 +97,161 @@ namespace PaintLike
             panelTools.Size = new Size(1220, 106);
             panelTools.TabIndex = 1;
             // 
-            // Group 1: FILE & HISTORY (X: 10..208)
+            // Group 1: FILE & HISTORY (X: 8..196)
             // 
-            btnImportImage.Location = new Point(18, 12);
+            btnImportImage.Location = new Point(14, 12);
             btnImportImage.Name = "btnImportImage";
             btnImportImage.Size = new Size(56, 32);
             btnImportImage.TabIndex = 108;
             btnImportImage.Text = "Mở";
             btnImportImage.Click += btnImportImage_Click;
             // 
-            btnSave.Location = new Point(78, 12);
+            btnSave.Location = new Point(74, 12);
             btnSave.Name = "btnSave";
-            btnSave.Size = new Size(58, 32);
+            btnSave.Size = new Size(56, 32);
             btnSave.TabIndex = 121;
             btnSave.Text = "Lưu";
             btnSave.UseVisualStyleBackColor = false;
             btnSave.Click += btnSave_Click;
             // 
-            btnExport.Location = new Point(140, 12);
+            btnExport.Location = new Point(134, 12);
             btnExport.Name = "btnExport";
-            btnExport.Size = new Size(60, 32);
+            btnExport.Size = new Size(58, 32);
             btnExport.TabIndex = 122;
             btnExport.Text = "Xuất";
             btnExport.UseVisualStyleBackColor = false;
             btnExport.Click += btnExport_Click;
             // 
-            btnUndo.Location = new Point(18, 48);
+            btnUndo.Location = new Point(14, 48);
             btnUndo.Name = "btnUndo";
-            btnUndo.Size = new Size(88, 30);
+            btnUndo.Size = new Size(86, 30);
             btnUndo.TabIndex = 112;
             btnUndo.Text = "Hoàn tác";
             btnUndo.UseVisualStyleBackColor = true;
             btnUndo.Click += btnUndo_Click;
             // 
-            btnRedo.Location = new Point(112, 48);
+            btnRedo.Location = new Point(106, 48);
             btnRedo.Name = "btnRedo";
-            btnRedo.Size = new Size(88, 30);
+            btnRedo.Size = new Size(86, 30);
             btnRedo.TabIndex = 113;
             btnRedo.Text = "Làm lại";
             btnRedo.UseVisualStyleBackColor = true;
             btnRedo.Click += btnRedo_Click;
             // 
-            // Group 2: TOOLS (X: 216..408)
+            // Group 2: TOOLS (X: 202..448)
             // 
-            btnLine.Location = new Point(224, 12);
+            btnLine.Location = new Point(208, 12);
             btnLine.Name = "btnLine";
-            btnLine.Size = new Size(85, 32);
+            btnLine.Size = new Size(74, 32);
             btnLine.TabIndex = 104;
             btnLine.Text = "Đường";
             btnLine.Click += btnLine_Click;
             // 
-            BttBezier.Location = new Point(315, 12);
+            BttBezier.Location = new Point(286, 12);
             BttBezier.Name = "BttBezier";
-            BttBezier.Size = new Size(85, 32);
+            BttBezier.Size = new Size(84, 32);
             BttBezier.TabIndex = 119;
             BttBezier.Text = "Cong";
             BttBezier.UseVisualStyleBackColor = false;
             BttBezier.Click += BttBezier_Click;
             // 
-            btnEraser.Location = new Point(224, 48);
+            btnEraser.Location = new Point(208, 48);
             btnEraser.Name = "btnEraser";
-            btnEraser.Size = new Size(85, 30);
+            btnEraser.Size = new Size(74, 30);
             btnEraser.TabIndex = 105;
             btnEraser.Text = "Tẩy";
             btnEraser.Click += btnEraser_Click;
             // 
-            btnSmartSelect.Location = new Point(315, 48);
+            btnSmartSelect.Location = new Point(286, 48);
             btnSmartSelect.Name = "btnSmartSelect";
-            btnSmartSelect.Size = new Size(85, 30);
+            btnSmartSelect.Size = new Size(84, 30);
             btnSmartSelect.TabIndex = 114;
             btnSmartSelect.Text = "Tách nền";
             btnSmartSelect.UseVisualStyleBackColor = true;
             btnSmartSelect.Click += btnSmartSelect_Click;
             // 
-            // Group 3: SHAPES (X: 416..672)
+            // Group 3: SHAPES (X: 454..696)
             // 
-            btnRect.Location = new Point(424, 12);
+            btnRect.Location = new Point(462, 12);
             btnRect.Name = "btnRect";
-            btnRect.Size = new Size(44, 31);
+            btnRect.Size = new Size(42, 31);
             btnRect.TabIndex = 103;
             btnRect.Text = "Rectangle";
             btnRect.Click += btnRect_Click;
             // 
-            BttRoundedRectangle.Location = new Point(473, 12);
+            BttRoundedRectangle.Location = new Point(508, 12);
             BttRoundedRectangle.Name = "BttRoundedRectangle";
-            BttRoundedRectangle.Size = new Size(44, 31);
+            BttRoundedRectangle.Size = new Size(42, 31);
             BttRoundedRectangle.TabIndex = 120;
             BttRoundedRectangle.Text = "Rounded Rectangle";
             BttRoundedRectangle.UseVisualStyleBackColor = false;
             BttRoundedRectangle.Click += BttRoundedRectangle_Click;
             // 
-            btnCircle.Location = new Point(522, 12);
+            btnCircle.Location = new Point(554, 12);
             btnCircle.Name = "btnCircle";
-            btnCircle.Size = new Size(44, 31);
+            btnCircle.Size = new Size(42, 31);
             btnCircle.TabIndex = 102;
             btnCircle.Text = "Circle";
             btnCircle.Click += btnCircle_Click;
             // 
-            BttEllipse.Location = new Point(571, 12);
+            BttEllipse.Location = new Point(600, 12);
             BttEllipse.Name = "BttEllipse";
-            BttEllipse.Size = new Size(44, 31);
+            BttEllipse.Size = new Size(42, 31);
             BttEllipse.TabIndex = 118;
             BttEllipse.Text = "Ellipse";
             BttEllipse.UseVisualStyleBackColor = false;
             BttEllipse.Click += BttEllipse_Click;
             // 
-            btnTriangle.Location = new Point(620, 12);
+            btnTriangle.Location = new Point(646, 12);
             btnTriangle.Name = "btnTriangle";
-            btnTriangle.Size = new Size(44, 31);
+            btnTriangle.Size = new Size(42, 31);
             btnTriangle.TabIndex = 101;
             btnTriangle.Text = "Triangle";
             btnTriangle.Click += btnTriangle_Click;
             // 
-            BttDiamond.Location = new Point(424, 47);
+            BttDiamond.Location = new Point(462, 47);
             BttDiamond.Name = "BttDiamond";
-            BttDiamond.Size = new Size(44, 31);
+            BttDiamond.Size = new Size(42, 31);
             BttDiamond.TabIndex = 116;
             BttDiamond.Text = "Diamond";
             BttDiamond.UseVisualStyleBackColor = false;
             BttDiamond.Click += BttDiamond_Click;
             // 
-            btnTrapezoid.Location = new Point(473, 47);
+            btnTrapezoid.Location = new Point(508, 47);
             btnTrapezoid.Name = "btnTrapezoid";
-            btnTrapezoid.Size = new Size(44, 31);
+            btnTrapezoid.Size = new Size(42, 31);
             btnTrapezoid.TabIndex = 107;
             btnTrapezoid.Text = "Trapezoid";
             btnTrapezoid.Click += btnTrapezoid_Click;
             // 
-            BttHexagon.Location = new Point(522, 47);
+            BttHexagon.Location = new Point(554, 47);
             BttHexagon.Name = "BttHexagon";
-            BttHexagon.Size = new Size(44, 31);
+            BttHexagon.Size = new Size(42, 31);
             BttHexagon.TabIndex = 115;
             BttHexagon.Text = "Hexagon";
             BttHexagon.UseVisualStyleBackColor = false;
             BttHexagon.Click += BttHexagon_Click;
             // 
-            btnStar.Location = new Point(571, 47);
+            btnStar.Location = new Point(600, 47);
             btnStar.Name = "btnStar";
-            btnStar.Size = new Size(44, 31);
+            btnStar.Size = new Size(42, 31);
             btnStar.TabIndex = 0;
             btnStar.Text = "Star";
             btnStar.Click += btnStar_Click;
             // 
-            BttArrows.Location = new Point(620, 47);
+            BttArrows.Location = new Point(646, 47);
             BttArrows.Name = "BttArrows";
-            BttArrows.Size = new Size(44, 31);
+            BttArrows.Size = new Size(42, 31);
             BttArrows.TabIndex = 117;
             BttArrows.Text = "Arrows";
             BttArrows.UseVisualStyleBackColor = false;
             BttArrows.Click += BttArrows_Click;
             // 
-            // Group 4: STROKE & COLOR (X: 680..1062)
+            // Group 4: STROKE & COLOR (X: 702..1074)
             // 
-            btnColor.Location = new Point(688, 12);
+            btnColor.Location = new Point(708, 12);
             btnColor.Name = "btnColor";
-            btnColor.Size = new Size(84, 32);
+            btnColor.Size = new Size(76, 32);
             btnColor.TabIndex = 106;
             btnColor.Text = "Màu vẽ";
             btnColor.Click += btnColor_Click;
@@ -259,39 +259,40 @@ namespace PaintLike
             nudEraserSize.BackColor = Color.White;
             nudEraserSize.ForeColor = Color.FromArgb(30, 58, 95);
             nudEraserSize.BorderStyle = BorderStyle.FixedSingle;
-            nudEraserSize.Location = new Point(892, 15);
+            nudEraserSize.Location = new Point(912, 15);
             nudEraserSize.Maximum = new decimal(new int[] { 300, 0, 0, 0 });
             nudEraserSize.Minimum = new decimal(new int[] { 5, 0, 0, 0 });
             nudEraserSize.Name = "nudEraserSize";
-            nudEraserSize.Size = new Size(54, 25);
+            nudEraserSize.Size = new Size(52, 25);
             nudEraserSize.TabIndex = 100;
             nudEraserSize.Value = new decimal(new int[] { 10, 0, 0, 0 });
             nudEraserSize.ValueChanged += nudEraserSize_ValueChanged;
             // 
-            lblOpacity.AutoSize = true;
+            lblOpacity.AutoSize = false;
             lblOpacity.BackColor = Color.White;
             lblOpacity.ForeColor = Color.FromArgb(71, 85, 105);
-            lblOpacity.Location = new Point(952, 18);
+            lblOpacity.Location = new Point(968, 18);
             lblOpacity.Name = "lblOpacity";
-            lblOpacity.Size = new Size(95, 18);
+            lblOpacity.Size = new Size(100, 20);
+            lblOpacity.TextAlign = ContentAlignment.MiddleLeft;
             lblOpacity.TabIndex = 110;
             lblOpacity.Text = "Độ mờ: 100%";
             // 
             trackBarOpacity.BackColor = Color.White;
-            trackBarOpacity.Location = new Point(862, 46);
+            trackBarOpacity.Location = new Point(880, 46);
             trackBarOpacity.Maximum = 255;
             trackBarOpacity.Name = "trackBarOpacity";
-            trackBarOpacity.Size = new Size(192, 32);
+            trackBarOpacity.Size = new Size(186, 32);
             trackBarOpacity.TabIndex = 109;
             trackBarOpacity.TickStyle = TickStyle.None;
             trackBarOpacity.Value = 255;
             trackBarOpacity.ValueChanged += trackBarOpacity_ValueChanged;
             // 
-            // Group 5: WORKSPACE (X: 1070..1188)
+            // Group 5: WORKSPACE (X: 1080..1198)
             // 
-            btnLayers.Location = new Point(1078, 12);
+            btnLayers.Location = new Point(1088, 12);
             btnLayers.Name = "btnLayers";
-            btnLayers.Size = new Size(102, 66);
+            btnLayers.Size = new Size(102, 31);
             btnLayers.TabIndex = 111;
             btnLayers.Text = "Layers";
             btnLayers.Click += btnLayers_Click;
@@ -306,6 +307,7 @@ namespace PaintLike
             Font = new Font("Segoe UI", 9F, FontStyle.Regular);
             Name = "Form1";
             StartPosition = FormStartPosition.CenterScreen;
+            WindowState = FormWindowState.Maximized;
             Text = "PaintLike Studio — Trình Vẽ & Xử Lý Ảnh Chuyên Nghiệp";
             ((System.ComponentModel.ISupportInitialize)pictureBox1).EndInit();
             panelTools.ResumeLayout(false);

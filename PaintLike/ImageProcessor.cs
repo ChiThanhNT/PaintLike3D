@@ -603,43 +603,123 @@ namespace PaintLike
         //Thanh start : Khử nền bằng thuật toán GrabCut OpenCV
         public static Bitmap RemoveBackgroundGrabCut(Bitmap sourceBmp, Rectangle rect)
         {
-            // Sử dụng khối using cho tất cả các đối tượng Mat để giải phóng bộ nhớ tự động
-            using (Mat src = sourceBmp.ToMat())
-            using (Mat mask = new Mat())
-            using (Mat bgModel = new Mat())
-            using (Mat fgModel = new Mat())
-            using (Mat foregroundMask = new Mat())
-            using (Mat finalMask = new Mat())
-            using (Mat result = new Mat(src.Size(), MatType.CV_8UC4, new Scalar(0, 0, 0, 0)))
-            using (Mat srcBGRA = new Mat())
+            if (sourceBmp == null)
+                throw new ArgumentNullException(nameof(sourceBmp));
+
+            // 1. Giới hạn vùng chọn trong kích thước thật của ảnh
+            Rectangle fullBounds = new Rectangle(0, 0, sourceBmp.Width, sourceBmp.Height);
+            Rectangle clampedRect = Rectangle.Intersect(rect, fullBounds);
+            if (clampedRect.Width <= 4 || clampedRect.Height <= 4)
+                return (Bitmap)sourceBmp.Clone();
+
+            using (Mat srcRaw = sourceBmp.ToMat())
+            using (Mat srcBgra = new Mat())
+            using (Mat alphaMat = new Mat())
             {
-                // 1. Chuyển đổi kênh màu nếu cần (GrabCut yêu cầu 3 kênh BGR)
-                if (src.Type() == MatType.CV_8UC4)
+                if (srcRaw.Channels() == 4)
                 {
-                    Cv2.CvtColor(src, src, ColorConversionCodes.BGRA2BGR);
+                    srcRaw.CopyTo(srcBgra);
+                    Cv2.ExtractChannel(srcBgra, alphaMat, 3);
+                }
+                else if (srcRaw.Channels() == 3)
+                {
+                    Cv2.CvtColor(srcRaw, srcBgra, ColorConversionCodes.BGR2BGRA);
+                    alphaMat.Create(srcBgra.Size(), MatType.CV_8UC1);
+                    alphaMat.SetTo(Scalar.All(255));
+                }
+                else
+                {
+                    Cv2.CvtColor(srcRaw, srcBgra, ColorConversionCodes.GRAY2BGRA);
+                    alphaMat.Create(srcBgra.Size(), MatType.CV_8UC1);
+                    alphaMat.SetTo(Scalar.All(255));
                 }
 
-                // 2. Định nghĩa vùng quan tâm (ROI)
-                Rect roi = new Rect(rect.X, rect.Y, rect.Width, rect.Height);
+                // 2. Tìm vùng chứa dữ liệu ảnh thực tế (Alpha > 0) để loại bỏ phần viền trong suốt xung quanh
+                using (Mat nonZeroPts = new Mat())
+                {
+                    Cv2.FindNonZero(alphaMat, nonZeroPts);
+                    if (nonZeroPts.Empty())
+                        return (Bitmap)sourceBmp.Clone();
 
-                // 3. Thực thi GrabCut (với 5 vòng lặp để cân bằng giữa độ chính xác và tốc độ)
-                Cv2.GrabCut(src, mask, roi, bgModel, fgModel, 5, GrabCutModes.InitWithRect);
+                    Rect cropRect = Cv2.BoundingRect(nonZeroPts);
+                    Rectangle contentBounds = new Rectangle(cropRect.X, cropRect.Y, cropRect.Width, cropRect.Height);
 
-                // 4. Xử lý mặt nạ (Mask)
-                // Lấy các pixel chắc chắn là tiền cảnh (FGD) và có thể là tiền cảnh (PR_FGD)
-                Cv2.Compare(mask, Scalar.All((double)GrabCutClasses.PR_FGD), foregroundMask, CmpTypes.EQ);
-                Cv2.Compare(mask, Scalar.All((double)GrabCutClasses.FGD), finalMask, CmpTypes.EQ);
+                    // 3. Giao vùng chọn của người dùng với vùng có điểm ảnh
+                    Rectangle activeRect = Rectangle.Intersect(clampedRect, contentBounds);
+                    if (activeRect.Width <= 4 || activeRect.Height <= 4 || cropRect.Width <= 8 || cropRect.Height <= 8)
+                        return (Bitmap)sourceBmp.Clone();
 
-                // Gộp hai mặt nạ lại
-                Cv2.BitwiseOr(foregroundMask, finalMask, finalMask);
+                    using (Mat croppedBgra = new Mat(srcBgra, cropRect))
+                    using (Mat croppedAlpha = new Mat(alphaMat, cropRect))
+                    using (Mat croppedBgr = new Mat())
+                    using (Mat alphaMask = new Mat())
+                    using (Mat zeroAlphaMask = new Mat())
+                    using (Mat mask = new Mat())
+                    using (Mat bgModel = new Mat())
+                    using (Mat fgModel = new Mat())
+                    using (Mat foregroundMask = new Mat())
+                    using (Mat finalMask = new Mat())
+                    using (Mat userSelectionMask = new Mat(croppedBgra.Size(), MatType.CV_8UC1, Scalar.All(0)))
+                    using (Mat result = new Mat(srcBgra.Size(), MatType.CV_8UC4, new Scalar(0, 0, 0, 0)))
+                    {
+                        Cv2.CvtColor(croppedBgra, croppedBgr, ColorConversionCodes.BGRA2BGR);
+                        Cv2.Compare(croppedAlpha, Scalar.All(0), alphaMask, CmpTypes.GT);
+                        Cv2.BitwiseNot(alphaMask, zeroAlphaMask);
 
-                // 5. Tạo ảnh kết quả có nền trong suốt
-                Cv2.CvtColor(src, srcBGRA, ColorConversionCodes.BGR2BGRA);
-                srcBGRA.CopyTo(result, finalMask);
+                        // Thay thế vùng trong suốt (alpha == 0) bằng màu trung bình của ảnh thật để không làm nhiễu bgModel bằng màu đen (0,0,0)
+                        if (Cv2.CountNonZero(zeroAlphaMask) > 0)
+                        {
+                            Scalar meanColor = Cv2.Mean(croppedBgr, alphaMask);
+                            croppedBgr.SetTo(meanColor, zeroAlphaMask);
+                        }
 
-                // 6. Chuyển đổi ngược lại Bitmap để hiển thị trên UI
-                return result.ToBitmap();
-            } // Tất cả các đối tượng Mat (src, mask,...) sẽ được giải phóng hoàn toàn tại đây
+                        // Tọa độ vùng chọn trong hệ tọa độ của cropRect
+                        Rect userRectInCrop = new Rect(
+                            activeRect.X - contentBounds.X,
+                            activeRect.Y - contentBounds.Y,
+                            activeRect.Width,
+                            activeRect.Height);
+
+                        // Đảm bảo localRoi không chạm sát biên cropRect để GrabCut luôn có mẫu nền (bgdSamples)
+                        int marginX = Math.Max(2, cropRect.Width / 25);
+                        int marginY = Math.Max(2, cropRect.Height / 25);
+                        int roiLeft = userRectInCrop.X;
+                        int roiTop = userRectInCrop.Y;
+                        int roiRight = userRectInCrop.Right;
+                        int roiBottom = userRectInCrop.Bottom;
+
+                        if (roiLeft < 2) roiLeft = Math.Min(marginX, cropRect.Width / 4);
+                        if (roiTop < 2) roiTop = Math.Min(marginY, cropRect.Height / 4);
+                        if (roiRight > cropRect.Width - 2) roiRight = Math.Max(cropRect.Width - marginX, (cropRect.Width * 3) / 4);
+                        if (roiBottom > cropRect.Height - 2) roiBottom = Math.Max(cropRect.Height - marginY, (cropRect.Height * 3) / 4);
+
+                        if (roiRight - roiLeft <= 4 || roiBottom - roiTop <= 4)
+                            return (Bitmap)sourceBmp.Clone();
+
+                        Rect localRoi = new Rect(roiLeft, roiTop, roiRight - roiLeft, roiBottom - roiTop);
+
+                        // 4. Thực thi GrabCut
+                        Cv2.GrabCut(croppedBgr, mask, localRoi, bgModel, fgModel, 5, GrabCutModes.InitWithRect);
+
+                        // 5. Lấy mặt nạ tiền cảnh (FGD + PR_FGD) và ép tuyệt đối không vượt ra ngoài vùng chọn của người dùng
+                        Cv2.Compare(mask, Scalar.All((double)GrabCutClasses.PR_FGD), foregroundMask, CmpTypes.EQ);
+                        Cv2.Compare(mask, Scalar.All((double)GrabCutClasses.FGD), finalMask, CmpTypes.EQ);
+                        Cv2.BitwiseOr(foregroundMask, finalMask, finalMask);
+
+                        Cv2.Rectangle(userSelectionMask, userRectInCrop, Scalar.All(255), -1);
+                        Cv2.BitwiseAnd(finalMask, userSelectionMask, finalMask);
+                        Cv2.BitwiseAnd(finalMask, alphaMask, finalMask);
+
+                        // 6. Chép phần tiền cảnh giữ nguyên Alpha gốc vào ảnh kết quả kích thước đầy đủ
+                        using (Mat resultRoi = new Mat(result, cropRect))
+                        {
+                            croppedBgra.CopyTo(resultRoi, finalMask);
+                        }
+
+                        return result.ToBitmap();
+                    }
+                }
+            }
         }
         /// <summary>
         /// Chuyển RGB sang HSV

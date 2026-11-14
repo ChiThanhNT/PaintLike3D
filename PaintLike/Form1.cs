@@ -34,11 +34,22 @@ namespace PaintLike
         private Label? lblActiveLayer;
         private Label? lblCanvasSize;
         private Label? lblZoomLevel;
+        private Button? btnZoomOut;
+        private Button? btnZoomIn;
+        private Button? btnClearCanvas;
         private NumericUpDown? nudPenWidth;
         private Panel? panelQuickColors;
         private Button? btnTeddy3D;
         private ToolTip? studioToolTip;
         private Dictionary<Tool, Button> toolButtons = new Dictionary<Tool, Button>();
+
+        // Zoom Scrollbars & Tracking
+        private HScrollBar? hScrollCanvas;
+        private VScrollBar? vScrollCanvas;
+        private int scrollX = 0;
+        private int scrollY = 0;
+        private bool isUpdatingScrollBars = false;
+        private bool isSaved = false;
 
         // Layer System
         private List<Layer> layers = new List<Layer>();
@@ -62,13 +73,15 @@ namespace PaintLike
 
             this.DoubleBuffered = true;
             this.SetStyle(ControlStyles.ResizeRedraw, true);
+            this.WindowState = FormWindowState.Maximized;
 
             // Khởi tạo bút vẽ với màu Xanh Royal tươi sáng (hạn chế màu đen trên thanh công cụ)
             pen = new Pen(Color.FromArgb(37, 99, 235), 2);
             pen.StartCap = pen.EndCap = LineCap.Round;
 
-            // Khởi tạo thanh trạng thái & giao diện Studio trước khi tính kích thước Canvas
+            // Khởi tạo thanh trạng thái, thanh trượt & giao diện Studio trước khi tính kích thước Canvas
             InitializeCoordinatesLabel();
+            InitializeScrollBars();
             InitializeStudioUI();
 
             // Tạo Canvas ban đầu
@@ -83,15 +96,27 @@ namespace PaintLike
 
             this.MouseWheel += (sender, e) => Form1_MouseWheel(sender, e);
             this.Resize += (sender, e) => Form1_Resize(sender, e);
+            this.FormClosing += Form1_FormClosing;
 
             try { nudEraserSize.Value = eraserSize; } catch { }
 
             // Khởi tạo Layer System
             InitializeLayerSystem();
+            EnsureDockZOrder();
 
             // Đặt công cụ mặc định và cập nhật trạng thái
             SetActiveTool(Tool.Line);
+            UpdateScrollBars();
             UpdateStatusBarInfo();
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            EnsureCanvasMatchesViewport();
+            UpdateScrollBars();
+            UpdateStatusBarInfo();
+            pictureBox1.Invalidate();
         }
 
         /// <summary>
@@ -124,8 +149,19 @@ namespace PaintLike
             // 2. Group TOOLS
             UITheme.StyleButton(btnLine, IconType.Line, "Đường", ButtonVariant.Default, false, studioToolTip, "Vẽ đường thẳng khử răng cưa (Line)");
             UITheme.StyleButton(BttBezier, IconType.Bezier, "Cong", ButtonVariant.Default, false, studioToolTip, "Vẽ đường cong Bezier mượt");
-            UITheme.StyleButton(btnEraser, IconType.Eraser, "Tẩy", ButtonVariant.Default, false, studioToolTip, "Tẩy trong suốt trên Layer hiện tại (Eraser)");
+            UITheme.StyleButton(btnEraser, IconType.Eraser, "Tẩy", ButtonVariant.Default, false, studioToolTip, "Tẩy nội dung trên Layer hiện tại (Eraser)");
             UITheme.StyleButton(btnSmartSelect, IconType.SmartSelect, "Tách nền", ButtonVariant.Default, false, studioToolTip, "Tách nền thông minh bằng OpenCV GrabCut (Smart Select)");
+
+            btnClearCanvas = new Button
+            {
+                Location = new Point(374, 12),
+                Size = new Size(68, 66),
+                Name = "btnClearCanvas"
+            };
+            UITheme.StyleButton(btnClearCanvas, IconType.Trash, "Xóa", ButtonVariant.Danger, false,
+                studioToolTip, "Xóa trắng nội dung Layer / trang vẽ hiện tại (Clear Canvas)");
+            btnClearCanvas.Click += BtnClearCanvas_Click;
+            panelTools.Controls.Add(btnClearCanvas);
 
             // 3. Group SHAPES (Icon-only với vector sắc nét + Tooltip chi tiết)
             UITheme.StyleButton(btnRect, IconType.Rectangle, "", ButtonVariant.Default, true, studioToolTip, "Hình chữ nhật (Rectangle)");
@@ -159,15 +195,17 @@ namespace PaintLike
             UITheme.StyleButton(btnColor, IconType.ColorPalette, "Màu vẽ", ButtonVariant.Default, false,
                 studioToolTip, "Chọn màu bút vẽ tùy chỉnh", () => pen.Color);
 
-            // Nhãn & NumericUpDown cho độ dày nét vẽ (Pen Width)
+            // Nhãn & NumericUpDown cho độ dày nét vẽ (Pen Width) — tránh đè chữ lên ô nhập
             Label lblPenW = new Label
             {
-                AutoSize = true,
+                AutoSize = false,
+                Size = new Size(34, 20),
+                TextAlign = ContentAlignment.MiddleRight,
                 Text = "Nét:",
                 Font = UITheme.FontSmallBold,
                 ForeColor = UITheme.TextSecondary,
                 BackColor = UITheme.BgRibbonGroup,
-                Location = new Point(776, 19)
+                Location = new Point(788, 18)
             };
             panelTools.Controls.Add(lblPenW);
 
@@ -176,8 +214,8 @@ namespace PaintLike
                 Minimum = 1,
                 Maximum = 50,
                 Value = (decimal)pen.Width,
-                Location = new Point(806, 15),
-                Size = new Size(46, 25),
+                Location = new Point(824, 15),
+                Size = new Size(48, 25),
                 BackColor = UITheme.BgInput,
                 ForeColor = UITheme.TextPrimary,
                 BorderStyle = BorderStyle.FixedSingle,
@@ -190,34 +228,41 @@ namespace PaintLike
             };
             studioToolTip.SetToolTip(nudPenWidth, "Độ dày nét vẽ (1 - 50 px)");
             panelTools.Controls.Add(nudPenWidth);
+            nudPenWidth.BringToFront();
 
             // Nhãn cho kích thước cục tẩy (Eraser Size)
             Label lblEraserW = new Label
             {
-                AutoSize = true,
+                AutoSize = false,
+                Size = new Size(34, 20),
+                TextAlign = ContentAlignment.MiddleRight,
                 Text = "Tẩy:",
                 Font = UITheme.FontSmallBold,
                 ForeColor = UITheme.TextSecondary,
                 BackColor = UITheme.BgRibbonGroup,
-                Location = new Point(858, 19)
+                Location = new Point(876, 18)
             };
             panelTools.Controls.Add(lblEraserW);
 
             nudEraserSize.Font = UITheme.FontSmallBold;
             nudEraserSize.BackColor = UITheme.BgInput;
             nudEraserSize.ForeColor = UITheme.TextPrimary;
+            nudEraserSize.Location = new Point(912, 15);
+            nudEraserSize.Size = new Size(52, 25);
+            nudEraserSize.BringToFront();
             studioToolTip.SetToolTip(nudEraserSize, "Kích thước cục tẩy (5 - 300 px)");
 
             lblOpacity.Font = UITheme.FontSmallBold;
             lblOpacity.BackColor = UITheme.BgRibbonGroup;
             lblOpacity.ForeColor = UITheme.TextSecondary;
+            lblOpacity.Location = new Point(968, 18);
             trackBarOpacity.BackColor = UITheme.BgRibbonGroup;
             studioToolTip.SetToolTip(trackBarOpacity, "Độ trong suốt của nét vẽ (0 - 100%)");
 
             // Bảng màu chọn nhanh (Quick Swatches)
             panelQuickColors = new Panel
             {
-                Location = new Point(688, 48),
+                Location = new Point(708, 48),
                 Size = new Size(168, 28),
                 BackColor = UITheme.BgRibbonGroup
             };
@@ -254,7 +299,7 @@ namespace PaintLike
             panelTools.Controls.Add(panelQuickColors);
 
             // 5. Group WORKSPACE (Layers & Filters Toggle + Teddy 3D Studio)
-            btnLayers.Location = new Point(1078, 12);
+            btnLayers.Location = new Point(1088, 12);
             btnLayers.Size = new Size(102, 31);
             UITheme.StyleButton(btnLayers, IconType.Layers, "Layers", ButtonVariant.Default, false,
                 studioToolTip, "Bật / tắt bảng quản lý Layer và Bộ lọc ảnh OpenCV");
@@ -262,7 +307,7 @@ namespace PaintLike
 
             btnTeddy3D = new Button
             {
-                Location = new Point(1078, 47),
+                Location = new Point(1088, 47),
                 Size = new Size(102, 31),
                 Name = "btnTeddy3D"
             };
@@ -278,11 +323,11 @@ namespace PaintLike
             g.Clear(UITheme.BgToolbar);
 
             // Vẽ 5 khung nhóm chức năng theo chuẩn Ribbon Studio
-            UITheme.DrawRibbonGroup(g, new Rectangle(10, 6, 198, 92), "TỆP & LỊCH SỬ");
-            UITheme.DrawRibbonGroup(g, new Rectangle(216, 6, 192, 92), "CÔNG CỤ VẼ");
-            UITheme.DrawRibbonGroup(g, new Rectangle(416, 6, 256, 92), "HÌNH HỌC VECTOR");
-            UITheme.DrawRibbonGroup(g, new Rectangle(680, 6, 382, 92), "MÀU SẮC & ĐỘ MỜ");
-            UITheme.DrawRibbonGroup(g, new Rectangle(1070, 6, 118, 92), "KHÔNG GIAN");
+            UITheme.DrawRibbonGroup(g, new Rectangle(8, 6, 188, 92), "TỆP & LỊCH SỬ");
+            UITheme.DrawRibbonGroup(g, new Rectangle(202, 6, 246, 92), "CÔNG CỤ VẼ");
+            UITheme.DrawRibbonGroup(g, new Rectangle(454, 6, 242, 92), "HÌNH HỌC VECTOR");
+            UITheme.DrawRibbonGroup(g, new Rectangle(702, 6, 372, 92), "MÀU SẮC, CỠ NÉT & ĐỘ MỜ");
+            UITheme.DrawRibbonGroup(g, new Rectangle(1080, 6, 118, 92), "KHÔNG GIAN");
 
             // Đường viền phân tách dưới đáy thanh công cụ
             using (Pen bottomBorder = new Pen(UITheme.BorderDefault, 1f))
@@ -367,12 +412,13 @@ namespace PaintLike
                 BackColor = Color.Transparent
             };
 
-            Button btnZoomOut = new Button
+            btnZoomOut = new Button
             {
                 Size = new Size(28, 22),
-                Location = new Point(4, 3)
+                Location = new Point(4, 3),
+                Enabled = false
             };
-            UITheme.StyleButton(btnZoomOut, IconType.ZoomOut, "", ButtonVariant.Ghost, true);
+            UITheme.StyleButton(btnZoomOut, IconType.ZoomOut, "", ButtonVariant.Ghost, true, studioToolTip, "Thu nhỏ (tối thiểu 100%)");
             btnZoomOut.Click += (s, e) => SetZoom(zoomScale - 0.1f);
             zoomPanel.Controls.Add(btnZoomOut);
 
@@ -390,12 +436,12 @@ namespace PaintLike
             lblZoomLevel.Click += (s, e) => SetZoom(1.0f);
             zoomPanel.Controls.Add(lblZoomLevel);
 
-            Button btnZoomIn = new Button
+            btnZoomIn = new Button
             {
                 Size = new Size(28, 22),
                 Location = new Point(120, 3)
             };
-            UITheme.StyleButton(btnZoomIn, IconType.ZoomIn, "", ButtonVariant.Ghost, true);
+            UITheme.StyleButton(btnZoomIn, IconType.ZoomIn, "", ButtonVariant.Ghost, true, studioToolTip, "Phóng to (tối đa 500%)");
             btnZoomIn.Click += (s, e) => SetZoom(zoomScale + 0.1f);
             zoomPanel.Controls.Add(btnZoomIn);
 
@@ -403,9 +449,135 @@ namespace PaintLike
             this.Controls.Add(panelStatusBar);
         }
 
+        private void InitializeScrollBars()
+        {
+            hScrollCanvas = new HScrollBar
+            {
+                Dock = DockStyle.Bottom,
+                Height = 18,
+                Visible = false,
+                Minimum = 0,
+                SmallChange = 20
+            };
+            hScrollCanvas.Scroll += (s, e) =>
+            {
+                if (isUpdatingScrollBars) return;
+                scrollX = e.NewValue;
+                pictureBox1.Invalidate();
+            };
+
+            vScrollCanvas = new VScrollBar
+            {
+                Dock = DockStyle.Right,
+                Width = 18,
+                Visible = false,
+                Minimum = 0,
+                SmallChange = 20
+            };
+            vScrollCanvas.Scroll += (s, e) =>
+            {
+                if (isUpdatingScrollBars) return;
+                scrollY = e.NewValue;
+                pictureBox1.Invalidate();
+            };
+
+            this.Controls.Add(hScrollCanvas);
+            this.Controls.Add(vScrollCanvas);
+        }
+
+        private void EnsureDockZOrder()
+        {
+            panelTools.BringToFront();
+            panelStatusBar?.BringToFront();
+            hScrollCanvas?.BringToFront();
+            vScrollCanvas?.BringToFront();
+            pictureBox1.BringToFront();
+            layerPanel?.BringToFront();
+        }
+
+        private void UpdateScrollBars()
+        {
+            if (canvas == null || hScrollCanvas == null || vScrollCanvas == null || isUpdatingScrollBars)
+                return;
+
+            isUpdatingScrollBars = true;
+            try
+            {
+                int availW = Math.Max(1, this.ClientSize.Width);
+                int availH = Math.Max(1, this.ClientSize.Height - panelTools.Height - (panelStatusBar?.Height ?? 28));
+
+                int scaledW = (int)Math.Round(canvas.Width * zoomScale);
+                int scaledH = (int)Math.Round(canvas.Height * zoomScale);
+
+                if (zoomScale <= 1.0f)
+                {
+                    hScrollCanvas.Visible = false;
+                    vScrollCanvas.Visible = false;
+                    scrollX = 0;
+                    scrollY = 0;
+                    hScrollCanvas.Value = 0;
+                    vScrollCanvas.Value = 0;
+                    return;
+                }
+
+                bool needH = scaledW > availW;
+                bool needV = scaledH > availH;
+                if (needV) needH = scaledW > Math.Max(1, availW - vScrollCanvas.Width);
+                if (needH) needV = scaledH > Math.Max(1, availH - hScrollCanvas.Height);
+
+                hScrollCanvas.Visible = needH;
+                vScrollCanvas.Visible = needV;
+
+                int viewW = Math.Max(1, availW - (needV ? vScrollCanvas.Width : 0));
+                int viewH = Math.Max(1, availH - (needH ? hScrollCanvas.Height : 0));
+
+                if (needH)
+                {
+                    int maxScrollX = Math.Max(0, scaledW - viewW);
+                    hScrollCanvas.Minimum = 0;
+                    hScrollCanvas.SmallChange = 20;
+                    hScrollCanvas.LargeChange = Math.Max(1, viewW);
+                    hScrollCanvas.Maximum = Math.Max(0, scaledW - 1);
+                    scrollX = Math.Max(0, Math.Min(scrollX, maxScrollX));
+                    int maxThumbX = Math.Max(0, hScrollCanvas.Maximum - hScrollCanvas.LargeChange + 1);
+                    hScrollCanvas.Value = Math.Max(0, Math.Min(scrollX, maxThumbX));
+                }
+                else
+                {
+                    scrollX = 0;
+                    hScrollCanvas.Value = 0;
+                }
+
+                if (needV)
+                {
+                    int maxScrollY = Math.Max(0, scaledH - viewH);
+                    vScrollCanvas.Minimum = 0;
+                    vScrollCanvas.SmallChange = 20;
+                    vScrollCanvas.LargeChange = Math.Max(1, viewH);
+                    vScrollCanvas.Maximum = Math.Max(0, scaledH - 1);
+                    scrollY = Math.Max(0, Math.Min(scrollY, maxScrollY));
+                    int maxThumbY = Math.Max(0, vScrollCanvas.Maximum - vScrollCanvas.LargeChange + 1);
+                    vScrollCanvas.Value = Math.Max(0, Math.Min(scrollY, maxThumbY));
+                }
+                else
+                {
+                    scrollY = 0;
+                    vScrollCanvas.Value = 0;
+                }
+            }
+            finally
+            {
+                isUpdatingScrollBars = false;
+            }
+        }
+
         private void SetZoom(float newZoom)
         {
-            zoomScale = Math.Max(0.5f, Math.Min(5.0f, (float)Math.Round(newZoom, 1)));
+            // Khóa mức Zoom Out tối thiểu ở 100% (1.0f) để không làm co nhỏ khung Canvas
+            zoomScale = Math.Max(1.0f, Math.Min(5.0f, (float)Math.Round(newZoom, 1)));
+            if (btnZoomOut != null) btnZoomOut.Enabled = zoomScale > 1.0f;
+            if (btnZoomIn != null) btnZoomIn.Enabled = zoomScale < 5.0f;
+            UpdateScrollBars();
             UpdateStatusBarInfo();
             pictureBox1.Invalidate();
         }
@@ -427,7 +599,7 @@ namespace PaintLike
                     Tool.Line => "Đường thẳng (Line)",
                     Tool.WuLine => "Đường thẳng Wu (Anti-Aliased)",
                     Tool.Bezier => "Đường cong (Bezier Curve)",
-                    Tool.Eraser => "Cục tẩy trong suốt (Eraser)",
+                    Tool.Eraser => "Cục tẩy (Eraser)",
                     Tool.SmartSelect => "Tách nền AI (GrabCut Selection)",
                     Tool.Rectangle => "Hình chữ nhật (Rectangle)",
                     Tool.RoundedRectangle => "Hình chữ nhật bo góc (Rounded Rect)",
@@ -473,14 +645,19 @@ namespace PaintLike
 
             layerPanel = new LayerPanel(layers);
             int topOffset = panelTools.Height + 12;
-            int bottomMargin = (panelStatusBar?.Height ?? 28) + 12;
-            int panelX = Math.Max(12, this.ClientSize.Width - layerPanel.Width - 14);
+            int bottomMargin = (panelStatusBar?.Height ?? 28) + 24;
+            int panelX = Math.Max(12, this.ClientSize.Width - layerPanel.Width - 24);
             int panelY = Math.Max(topOffset, this.ClientSize.Height - layerPanel.Height - bottomMargin);
             layerPanel.Location = new Point(panelX, panelY);
             layerPanel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
 
             layerPanel.SetCanvasDimensions(canvas.Width, canvas.Height);
 
+            layerPanel.BeforeLayerAction += (s, e) =>
+            {
+                SaveState();
+                isSaved = false;
+            };
             layerPanel.LayersChanged += LayerPanel_LayersChanged;
             layerPanel.LayerSelectionChanged += LayerPanel_LayerSelectionChanged;
             layerPanel.VisibleChanged += (s, e) => UITheme.SetButtonSelected(btnLayers, layerPanel.Visible);
@@ -507,6 +684,7 @@ namespace PaintLike
 
         private void LayerPanel_LayersChanged(object? sender, EventArgs e)
         {
+            isSaved = false;
             if (layerPanel != null)
             {
                 currentLayerIndex = layerPanel.GetCurrentLayerIndex();
@@ -528,8 +706,8 @@ namespace PaintLike
 
         private Point GetCanvasPoint(Point screenPoint)
         {
-            int x = (int)Math.Round(screenPoint.X / (double)zoomScale);
-            int y = (int)Math.Round(screenPoint.Y / (double)zoomScale);
+            int x = (int)Math.Round((screenPoint.X + scrollX) / (double)zoomScale);
+            int y = (int)Math.Round((screenPoint.Y + scrollY) / (double)zoomScale);
 
             x = Math.Max(0, Math.Min(x, canvas.Width - 1));
             y = Math.Max(0, Math.Min(y, canvas.Height - 1));
@@ -796,40 +974,79 @@ namespace PaintLike
             }
         }
 
-        private void Form1_Resize(object? sender, EventArgs e)
+        private void EnsureCanvasMatchesViewport()
         {
-            if (pictureBox1.ClientSize.Width <= 0 || pictureBox1.ClientSize.Height <= 0)
-                return;
+            if (canvas == null) return;
 
-            if (canvas != null)
+            int viewW = pictureBox1.ClientSize.Width + (vScrollCanvas != null && vScrollCanvas.Visible ? vScrollCanvas.Width : 0);
+            int viewH = pictureBox1.ClientSize.Height + (hScrollCanvas != null && hScrollCanvas.Visible ? hScrollCanvas.Height : 0);
+            if (viewW <= 0 || viewH <= 0) return;
+
+            if (viewW > canvas.Width || viewH > canvas.Height)
             {
-                if (pictureBox1.ClientSize.Width > canvas.Width || pictureBox1.ClientSize.Height > canvas.Height)
+                int newW = Math.Max(canvas.Width, viewW);
+                int newH = Math.Max(canvas.Height, viewH);
+
+                Bitmap oldCanvas = canvas;
+                Bitmap newCanvas = new Bitmap(newW, newH);
+                using (Graphics g = Graphics.FromImage(newCanvas))
                 {
-                    int newW = Math.Max(canvas.Width, pictureBox1.ClientSize.Width);
-                    int newH = Math.Max(canvas.Height, pictureBox1.ClientSize.Height);
+                    g.Clear(Color.White);
+                    g.DrawImage(oldCanvas, 0, 0);
+                }
+                canvas = newCanvas;
+                oldCanvas.Dispose();
 
-                    Bitmap oldCanvas = canvas;
-                    Bitmap newCanvas = new Bitmap(newW, newH);
-                    using (Graphics g = Graphics.FromImage(newCanvas))
+                if (layerPanel != null)
+                {
+                    layerPanel.UpdateAllLayersSize(newW, newH);
+                    layerPanel.SetCanvasDimensions(newW, newH);
+                }
+
+                ResizeLayerHistorySnapshots(newW, newH);
+                RecomposeCanvas();
+                UpdateStatusBarInfo();
+            }
+        }
+
+        private static void ResizeLayerHistoryList(List<Layer> snapshot, int newW, int newH)
+        {
+            for (int i = 0; i < snapshot.Count; i++)
+            {
+                Layer layer = snapshot[i];
+                if (layer.Image.Width != newW || layer.Image.Height != newH)
+                {
+                    bool isBg = (i == snapshot.Count - 1) &&
+                                string.Equals(layer.Name, "Background", StringComparison.OrdinalIgnoreCase);
+                    Bitmap resized = new Bitmap(newW, newH, PixelFormat.Format32bppArgb);
+                    using (Graphics g = Graphics.FromImage(resized))
                     {
-                        g.Clear(Color.White);
-                        g.DrawImage(oldCanvas, 0, 0);
+                        g.Clear(isBg ? Color.White : Color.Transparent);
+                        g.DrawImage(layer.Image, 0, 0);
                     }
-                    canvas = newCanvas;
-                    oldCanvas.Dispose();
-
-                    if (layerPanel != null)
-                    {
-                        layerPanel.UpdateAllLayersSize(newW, newH);
-                        layerPanel.SetCanvasDimensions(newW, newH);
-                    }
-
-                    ClearUndoList();
-                    ClearStack(redoStack);
-                    SaveState();
-                    UpdateStatusBarInfo();
+                    layer.Image.Dispose();
+                    layer.Image = resized;
                 }
             }
+        }
+
+        private void ResizeLayerHistorySnapshots(int newW, int newH)
+        {
+            foreach (var snapshot in undoList)
+                ResizeLayerHistoryList(snapshot, newW, newH);
+            foreach (var snapshot in redoStack)
+                ResizeLayerHistoryList(snapshot, newW, newH);
+        }
+
+        private void Form1_Resize(object? sender, EventArgs e)
+        {
+            if (this.WindowState == FormWindowState.Minimized)
+                return;
+
+            EnsureCanvasMatchesViewport();
+            UpdateScrollBars();
+            UpdateStatusBarInfo();
+            pictureBox1.Invalidate();
         }
 
         private void Form1_MouseWheel(object? sender, MouseEventArgs e)
@@ -838,14 +1055,87 @@ namespace PaintLike
             else SetZoom(zoomScale - 0.1f);
         }
 
+        private bool IsCurrentLayerBackgroundBase()
+        {
+            if (layers == null || currentLayerIndex < 0 || currentLayerIndex >= layers.Count)
+                return false;
+            return (currentLayerIndex == layers.Count - 1) &&
+                   string.Equals(layers[currentLayerIndex].Name, "Background", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void EraseSegment(Point p1, Point p2)
+        {
+            if (layers == null || currentLayerIndex < 0 || currentLayerIndex >= layers.Count)
+                return;
+
+            Layer currentLayer = layers[currentLayerIndex];
+            Bitmap eraserTarget = currentLayer.Image;
+            bool isBackgroundBase = IsCurrentLayerBackgroundBase();
+            int actualEraserSize = Math.Max(1, (int)Math.Round(eraserSize / zoomScale));
+            Color eraseColor = isBackgroundBase ? Color.White : Color.Transparent;
+
+            using (Graphics g = Graphics.FromImage(eraserTarget))
+            {
+                g.SmoothingMode = SmoothingMode.None;
+                g.CompositingMode = isBackgroundBase ? CompositingMode.SourceOver : CompositingMode.SourceCopy;
+
+                using (Brush b = new SolidBrush(eraseColor))
+                {
+                    if (p1 == p2)
+                    {
+                        g.FillEllipse(b, p2.X - actualEraserSize / 2f, p2.Y - actualEraserSize / 2f, actualEraserSize, actualEraserSize);
+                    }
+                    else
+                    {
+                        using (Pen erasePen = new Pen(eraseColor, actualEraserSize))
+                        {
+                            erasePen.StartCap = LineCap.Round;
+                            erasePen.EndCap = LineCap.Round;
+                            erasePen.LineJoin = LineJoin.Round;
+                            g.DrawLine(erasePen, p1, p2);
+                        }
+                        g.FillEllipse(b, p2.X - actualEraserSize / 2f, p2.Y - actualEraserSize / 2f, actualEraserSize, actualEraserSize);
+                    }
+                }
+            }
+        }
+
+        private void BtnClearCanvas_Click(object? sender, EventArgs e)
+        {
+            if (layers == null || layers.Count == 0 || currentLayerIndex < 0 || currentLayerIndex >= layers.Count)
+                return;
+
+            SaveState();
+            isSaved = false;
+
+            Layer currentLayer = layers[currentLayerIndex];
+            bool isBackgroundBase = IsCurrentLayerBackgroundBase();
+            using (Graphics g = Graphics.FromImage(currentLayer.Image))
+            {
+                g.Clear(isBackgroundBase ? Color.White : Color.Transparent);
+            }
+
+            RecomposeCanvas();
+            layerPanel?.RefreshLayerThumbnails();
+            UpdateStatusBarInfo();
+            pictureBox1.Invalidate();
+        }
+
         private void pictureBox1_MouseDown(object sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Left)
             {
                 SaveState();
+                isSaved = false;
                 drawing = true;
                 start = GetCanvasPoint(e.Location);
                 end = start;
+
+                if (currentTool == Tool.Eraser)
+                {
+                    EraseSegment(start, end);
+                    pictureBox1.Invalidate();
+                }
             }
         }
 
@@ -857,25 +1147,8 @@ namespace PaintLike
 
                 if (currentTool == Tool.Eraser)
                 {
-                    Bitmap eraserTarget = canvas;
-                    if (layerPanel != null)
-                    {
-                        Layer? currentLayer = layerPanel.GetCurrentLayer();
-                        if (currentLayer != null)
-                            eraserTarget = currentLayer.Image;
-                    }
-
-                    int actualEraserSize = Math.Max(1, (int)(eraserSize / zoomScale));
-
-                    using (Graphics g = Graphics.FromImage(eraserTarget))
-                    {
-                        g.SmoothingMode = SmoothingMode.None;
-                        g.CompositingMode = CompositingMode.SourceCopy;
-                        using (Brush b = new SolidBrush(Color.Transparent))
-                        {
-                            g.FillEllipse(b, end.X - actualEraserSize / 2, end.Y - actualEraserSize / 2, actualEraserSize, actualEraserSize);
-                        }
-                    }
+                    EraseSegment(start, end);
+                    start = end;
                 }
 
                 pictureBox1.Invalidate();
@@ -919,6 +1192,14 @@ namespace PaintLike
             Layer currentLayer = layers[currentLayerIndex];
             Bitmap drawTarget = currentLayer.Image;
 
+            if (currentTool == Tool.Eraser)
+            {
+                RecomposeCanvas();
+                layerPanel?.RefreshLayerThumbnails();
+                pictureBox1.Invalidate();
+                return;
+            }
+
             if (currentTool == Tool.SmartSelect)
             {
                 if (rect.Width > 5 && rect.Height > 5)
@@ -958,10 +1239,21 @@ namespace PaintLike
                         using (Graphics g = Graphics.FromImage(drawTarget))
                         {
                             g.SmoothingMode = SmoothingMode.AntiAlias;
-                            using (Pen opacityPen = new Pen(GetColorWithOpacity(pen.Color), pen.Width))
+                            Color c = GetColorWithOpacity(pen.Color);
+                            if (start == end)
                             {
-                                opacityPen.StartCap = opacityPen.EndCap = LineCap.Round;
-                                g.DrawLine(opacityPen, start, end);
+                                using (SolidBrush sb = new SolidBrush(c))
+                                {
+                                    g.FillEllipse(sb, start.X - pen.Width / 2f, start.Y - pen.Width / 2f, pen.Width, pen.Width);
+                                }
+                            }
+                            else
+                            {
+                                using (Pen opacityPen = new Pen(c, pen.Width))
+                                {
+                                    opacityPen.StartCap = opacityPen.EndCap = LineCap.Round;
+                                    g.DrawLine(opacityPen, start, end);
+                                }
                             }
                         }
                         break;
@@ -996,6 +1288,7 @@ namespace PaintLike
 
         private void pictureBox1_Paint(object sender, PaintEventArgs e)
         {
+            e.Graphics.TranslateTransform(-scrollX, -scrollY);
             e.Graphics.ScaleTransform(zoomScale, zoomScale);
 
             // Vẽ nền checkerboard cho vùng Canvas để thấy rõ độ trong suốt khi tẩy / tách nền
@@ -1078,12 +1371,12 @@ namespace PaintLike
             {
                 Point mousePos = pictureBox1.PointToClient(Cursor.Position);
                 Point canvasPos = GetCanvasPoint(mousePos);
-                int actualSize = Math.Max(1, (int)(eraserSize / zoomScale));
+                int actualSize = Math.Max(1, (int)Math.Round(eraserSize / zoomScale));
 
                 using (Pen p = new Pen(UITheme.AccentPrimaryHover, 1.5f / zoomScale))
                 {
                     p.DashStyle = DashStyle.Dot;
-                    e.Graphics.DrawEllipse(p, canvasPos.X - actualSize / 2, canvasPos.Y - actualSize / 2, actualSize, actualSize);
+                    e.Graphics.DrawEllipse(p, canvasPos.X - actualSize / 2f, canvasPos.Y - actualSize / 2f, actualSize, actualSize);
                 }
             }
         }
@@ -1093,7 +1386,7 @@ namespace PaintLike
             Rectangle rect = GetRect(start, end);
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
-            float previewPenWidth = Math.Max(pen.Width / zoomScale, 1f);
+            float previewPenWidth = Math.Max(pen.Width, 1f);
 
             switch (currentTool)
             {
@@ -1114,9 +1407,13 @@ namespace PaintLike
                 case Tool.Circle:
                     using (Pen opacityPen = new Pen(GetColorWithOpacity(pen.Color), previewPenWidth))
                     {
-                        int diameter = Math.Min(rect.Width, rect.Height);
-                        Rectangle circleRect = new Rectangle(rect.Left, rect.Top, diameter, diameter);
-                        g.DrawEllipse(opacityPen, circleRect);
+                        int radius = Math.Min(rect.Width, rect.Height) / 2;
+                        if (radius > 0)
+                        {
+                            int cx = rect.X + rect.Width / 2;
+                            int cy = rect.Y + rect.Height / 2;
+                            g.DrawEllipse(opacityPen, cx - radius, cy - radius, radius * 2, radius * 2);
+                        }
                     }
                     break;
                 case Tool.Triangle:
@@ -1261,9 +1558,11 @@ namespace PaintLike
                 layers = undoList[lastIdx];
                 undoList.RemoveAt(lastIdx);
                 currentLayerIndex = Math.Max(0, Math.Min(currentLayerIndex, Math.Max(0, layers.Count - 1)));
+                isSaved = false;
 
                 RecomposeCanvas();
                 layerPanel?.RefreshLayersList(layers);
+                layerPanel?.SetSelectedLayerIndex(currentLayerIndex);
                 UpdateStatusBarInfo();
                 pictureBox1.Invalidate();
             }
@@ -1300,9 +1599,11 @@ namespace PaintLike
 
                 layers = redoStack.Pop();
                 currentLayerIndex = Math.Max(0, Math.Min(currentLayerIndex, Math.Max(0, layers.Count - 1)));
+                isSaved = false;
 
                 RecomposeCanvas();
                 layerPanel?.RefreshLayersList(layers);
+                layerPanel?.SetSelectedLayerIndex(currentLayerIndex);
                 UpdateStatusBarInfo();
                 pictureBox1.Invalidate();
             }
@@ -1516,10 +1817,12 @@ namespace PaintLike
 
                         layers.Insert(0, imageLayer);
                         currentLayerIndex = 0;
+                        isSaved = false;
 
                         if (layerPanel != null)
                         {
-                            layerPanel.RefreshLayerList();
+                            layerPanel.RefreshLayersList(layers);
+                            layerPanel.SetSelectedLayerIndex(0);
                         }
 
                         RecomposeCanvas();
@@ -1586,10 +1889,12 @@ namespace PaintLike
 
             layers.Insert(0, teddyLayer);
             currentLayerIndex = 0;
+            isSaved = false;
 
             if (layerPanel != null)
             {
-                layerPanel.RefreshLayerList();
+                layerPanel.RefreshLayersList(layers);
+                layerPanel.SetSelectedLayerIndex(0);
             }
 
             RecomposeCanvas();
@@ -1613,7 +1918,7 @@ namespace PaintLike
             Redo();
         }
 
-        private void ExecuteSaveAction(string title, string filter)
+        private bool ExecuteSaveAction(string title, string filter)
         {
             using (SaveFileDialog saveFileDialog = new SaveFileDialog())
             {
@@ -1636,15 +1941,42 @@ namespace PaintLike
                             format = ImageFormat.Bmp;
 
                         canvas.Save(saveFileDialog.FileName, format);
+                        isSaved = true;
 
                         MessageBox.Show("Lưu file thành công!", "Thông báo",
                             MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        return true;
                     }
                     catch (Exception ex)
                     {
                         MessageBox.Show("Có lỗi khi lưu file: " + ex.Message, "Lỗi",
                             MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
+                }
+            }
+
+            return false;
+        }
+
+        private void Form1_FormClosing(object? sender, FormClosingEventArgs e)
+        {
+            if (isSaved) return;
+
+            DialogResult result = MessageBox.Show(
+                "Bạn có muốn lưu bức vẽ trước khi thoát không?\n(Do you want to save changes before exiting?)",
+                "Xác nhận thoát - PaintLike 3D",
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Warning);
+
+            if (result == DialogResult.Cancel)
+            {
+                e.Cancel = true;
+            }
+            else if (result == DialogResult.Yes)
+            {
+                if (!ExecuteSaveAction("Lưu hình ảnh", "PNG|*.png|JPEG|*.jpg|Bitmap|*.bmp"))
+                {
+                    e.Cancel = true;
                 }
             }
         }
