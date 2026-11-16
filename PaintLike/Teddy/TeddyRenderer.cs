@@ -15,6 +15,26 @@ namespace PaintLike.Teddy
     }
 
     /// <summary>
+    /// Chế độ hiển thị Phần Bị Cắt Rời (Cut-Off Piece) để người dùng quan sát vị trí bị cắt.
+    /// </summary>
+    public enum TeddyCutPieceVisibility
+    {
+        Visible,            // Hiển thị rõ phần bị cắt (tách hé một khoảng khỏi thân chính)
+        GhostTransparent,   // Hiển thị mờ xuyên thấu (Ghost / X-Ray) để nhìn xuyên vào vị trí mặt cắt
+        Hidden              // Ẩn hoàn toàn phần bị cắt để nhìn trực diện vào vị trí bị cắt
+    }
+
+    /// <summary>
+    /// Chế độ hiển thị Thiết Diện Mặt Cắt (Cut Cross-Section Surface) tại vị trí bị cắt.
+    /// </summary>
+    public enum TeddyCutSurfaceViewMode
+    {
+        HighlightedCrossSection, // Tô nổi bật thiết diện mặt cắt + viền đỏ cam tại vị trí bị cắt
+        OpenHollowInterior,      // Ẩn nắp mặt cắt (Mở rỗng lòng khối) để nhìn sâu vào bên trong vật thể 3D
+        SameAsBodyColor          // Mặt cắt đồng màu với vỏ ngoài vật thể
+    }
+
+    /// <summary>
     /// [TV3-03] Bộ kết xuất đồ họa 3D phần mềm tốc độ cao (Mục 1 & 6 bài báo Teddy).
     /// Hỗ trợ Z-sorting (Painter's Algorithm), loại bỏ mặt khuất (Back-face culling),
     /// tự động phát hiện đường viền Silhouette cho chế độ Pen-and-Ink NPR và kết xuất ảnh PNG trong suốt.
@@ -29,6 +49,7 @@ namespace PaintLike.Teddy
             public PointF P2;
             public float AvgZ;
             public Vector3 ViewNormal;
+            public bool IsInteriorBackFace;
         }
 
         public static void RenderScene(
@@ -39,7 +60,10 @@ namespace PaintLike.Teddy
             TeddyRenderStyle style,
             IReadOnlyList<PointF>? active2DStroke = null,
             Color? activeStrokeColor = null,
-            bool drawBackground = true)
+            bool drawBackground = true,
+            TeddyCutPieceVisibility cutPieceVisibility = TeddyCutPieceVisibility.Visible,
+            TeddyCutSurfaceViewMode cutSurfaceViewMode = TeddyCutSurfaceViewMode.HighlightedCrossSection,
+            Color? cutFillColor = null)
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
@@ -48,8 +72,11 @@ namespace PaintLike.Teddy
                 DrawStudioViewportBackground(g, viewport, style);
             }
 
-            if (mesh != null && !mesh.IsEmpty)
+            if (mesh != null && !mesh.IsEmpty && !(mesh.IsCutOffPiece && cutPieceVisibility == TeddyCutPieceVisibility.Hidden))
             {
+                bool isGhostPiece = mesh.IsCutOffPiece && cutPieceVisibility == TeddyCutPieceVisibility.GhostTransparent;
+                bool isOpenHollow = cutSurfaceViewMode == TeddyCutSurfaceViewMode.OpenHollowInterior && mesh.CutSectionRings.Count > 0;
+
                 int vertCount = mesh.Vertices.Count;
                 Vector3[] screenVerts = new Vector3[vertCount];
                 for (int i = 0; i < vertCount; i++)
@@ -64,6 +91,14 @@ namespace PaintLike.Teddy
                 for (int i = 0; i < triCount; i++)
                 {
                     var tri = mesh.Triangles[i];
+
+                    // Nếu người dùng chọn "Ẩn vị trí cắt" -> Ẩn nắp mặt cắt để nhìn thẳng vào bên trong vị trí bị cắt
+                    if (tri.IsCutCap && isOpenHollow)
+                    {
+                        isFrontFacing[i] = false;
+                        continue;
+                    }
+
                     Vector3 s0 = screenVerts[tri.V0];
                     Vector3 s1 = screenVerts[tri.V1];
                     Vector3 s2 = screenVerts[tri.V2];
@@ -74,9 +109,10 @@ namespace PaintLike.Teddy
                     // Kiểm tra hướng mặt trên màn hình (Cross product 2D) kết hợp ViewNormal.Z
                     float screenCross = (s1.X - s0.X) * (s2.Y - s0.Y) - (s1.Y - s0.Y) * (s2.X - s0.X);
                     bool front = vNorm.Z >= -0.05f || screenCross < 0f;
-                    isFrontFacing[i] = vNorm.Z >= 0f;
+                    isFrontFacing[i] = vNorm.Z >= 0f || tri.IsCutCap;
 
-                    if (style != TeddyRenderStyle.WireframeSpine && !front)
+                    bool hasCut = mesh.CutSectionRings.Count > 0 || tri.IsCutCap;
+                    if (style != TeddyRenderStyle.WireframeSpine && !front && !isOpenHollow && !hasCut)
                         continue;
 
                     float avgZ = (s0.Z + s1.Z + s2.Z) / 3f;
@@ -87,7 +123,8 @@ namespace PaintLike.Teddy
                         P1 = new PointF(s1.X, s1.Y),
                         P2 = new PointF(s2.X, s2.Y),
                         AvgZ = avgZ,
-                        ViewNormal = vNorm
+                        ViewNormal = vNorm.Z >= 0f ? vNorm : -vNorm,
+                        IsInteriorBackFace = !front && !tri.IsCutCap
                     });
                 }
 
@@ -106,6 +143,8 @@ namespace PaintLike.Teddy
                 }
                 else
                 {
+                    Color highlightedCapColor = cutFillColor ?? ComputeCrossSectionHighlightColor(mesh.BaseColor);
+
                     // Vẽ các mặt tam giác đã tô bóng
                     foreach (var rt in visibleTris)
                     {
@@ -113,7 +152,29 @@ namespace PaintLike.Teddy
                         polyPts[1] = rt.P1;
                         polyPts[2] = rt.P2;
 
-                        Color triBaseColor = mesh.Triangles[rt.TriIndex].CustomColor ?? mesh.BaseColor;
+                        var tri = mesh.Triangles[rt.TriIndex];
+                        Color triBaseColor;
+                        if (tri.CustomColor.HasValue)
+                        {
+                            triBaseColor = tri.CustomColor.Value;
+                        }
+                        else if (tri.IsCutCap && cutSurfaceViewMode == TeddyCutSurfaceViewMode.HighlightedCrossSection)
+                        {
+                            triBaseColor = highlightedCapColor;
+                        }
+                        else if (rt.IsInteriorBackFace)
+                        {
+                            // Mặt trong lòng khối khi ẩn nắp vết cắt: tông trầm sâu hơn để tạo chiều sâu lòng rỗng 3D
+                            triBaseColor = Color.FromArgb(
+                                (int)(mesh.BaseColor.R * 0.62f),
+                                (int)(mesh.BaseColor.G * 0.58f),
+                                (int)(mesh.BaseColor.B * 0.65f));
+                        }
+                        else
+                        {
+                            triBaseColor = mesh.BaseColor;
+                        }
+
                         Color shadedColor = ComputeShadedColor(
                             triBaseColor,
                             rt.ViewNormal,
@@ -121,24 +182,35 @@ namespace PaintLike.Teddy
                             fillLight,
                             style == TeddyRenderStyle.PenAndInk);
 
-                        using (SolidBrush brush = new SolidBrush(shadedColor))
-                        using (Pen seamPen = new Pen(shadedColor, 1.0f))
+                        if (isGhostPiece)
                         {
-                            g.FillPolygon(brush, polyPts);
-                            // Vẽ viền mảnh cùng màu để khử khe hở anti-alias giữa 2 tam giác kề nhau
-                            g.DrawPolygon(seamPen, polyPts);
+                            shadedColor = Color.FromArgb(72, shadedColor.R, shadedColor.G, shadedColor.B);
+                            using (SolidBrush brush = new SolidBrush(shadedColor))
+                            {
+                                g.FillPolygon(brush, polyPts);
+                            }
+                        }
+                        else
+                        {
+                            using (SolidBrush brush = new SolidBrush(shadedColor))
+                            using (Pen seamPen = new Pen(shadedColor, 1.0f))
+                            {
+                                g.FillPolygon(brush, polyPts);
+                                // Vẽ viền mảnh cùng màu để khử khe hở anti-alias giữa 2 tam giác kề nhau
+                                g.DrawPolygon(seamPen, polyPts);
+                            }
                         }
                     }
 
                     // Nếu là chế độ Pen-and-Ink (Hình 1 bài báo): Phát hiện và vẽ các cạnh Silhouette đậm nét mực
                     if (style == TeddyRenderStyle.PenAndInk)
                     {
-                        DrawPenAndInkSilhouettes(g, mesh, screenVerts, isFrontFacing);
+                        DrawPenAndInkSilhouettes(g, mesh, screenVerts, isFrontFacing, isGhostPiece, isOpenHollow);
                     }
                 }
 
-                // Vẽ các nét trang trí trên bề mặt 3D (Surface Lines - Mục 4.3 & 5.2)
-                DrawSurfaceLines(g, mesh, camera, viewport);
+                // Vẽ các nét trang trí trên bề mặt 3D và đường viền đánh dấu vị trí mặt cắt
+                DrawSurfaceLines(g, mesh, camera, viewport, isGhostPiece, cutSurfaceViewMode);
             }
 
             // Vẽ nét bút 2D người dùng đang kéo trên màn hình
@@ -183,7 +255,10 @@ namespace PaintLike.Teddy
             int height,
             IReadOnlyList<TeddyMesh> meshes,
             VirtualTrackballCamera camera,
-            TeddyRenderStyle style)
+            TeddyRenderStyle style,
+            TeddyCutPieceVisibility cutPieceVisibility = TeddyCutPieceVisibility.Visible,
+            TeddyCutSurfaceViewMode cutSurfaceViewMode = TeddyCutSurfaceViewMode.HighlightedCrossSection,
+            Color? cutFillColor = null)
         {
             Bitmap bmp = new Bitmap(Math.Max(1, width), Math.Max(1, height), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
             using (Graphics g = Graphics.FromImage(bmp))
@@ -191,7 +266,7 @@ namespace PaintLike.Teddy
                 g.Clear(Color.Transparent);
                 if (meshes != null)
                 {
-                    var sorted = meshes.Where(m => m != null && !m.IsEmpty).OrderBy(m =>
+                    var sorted = meshes.Where(m => m != null && !m.IsEmpty && !(m.IsCutOffPiece && cutPieceVisibility == TeddyCutPieceVisibility.Hidden)).OrderBy(m =>
                     {
                         float sumZ = 0f;
                         foreach (var v in m.Vertices) sumZ += camera.WorldToView(v).Z;
@@ -200,11 +275,27 @@ namespace PaintLike.Teddy
 
                     foreach (var mesh in sorted)
                     {
-                        RenderScene(g, new Size(width, height), mesh, camera, style, null, null, drawBackground: false);
+                        RenderScene(g, new Size(width, height), mesh, camera, style, null, null,
+                            drawBackground: false,
+                            cutPieceVisibility: cutPieceVisibility,
+                            cutSurfaceViewMode: cutSurfaceViewMode,
+                            cutFillColor: cutFillColor);
                     }
                 }
             }
             return bmp;
+        }
+
+        /// <summary>
+        /// Tạo tông màu thiết diện mặt cắt sáng ấm tương phản nhẹ với vỏ ngoài để người dùng nhìn rõ vị trí bị cắt.
+        /// </summary>
+        private static Color ComputeCrossSectionHighlightColor(Color bodyColor)
+        {
+            // Pha màu kem sáng ấm (Warm Ivory / Cross-Section Core) để mặt cắt nổi bật rõ ràng so với lớp vỏ ngoài
+            int r = Math.Clamp((int)(bodyColor.R * 0.42f + 255 * 0.58f), 0, 255);
+            int g = Math.Clamp((int)(bodyColor.G * 0.42f + 235 * 0.58f), 0, 255);
+            int b = Math.Clamp((int)(bodyColor.B * 0.38f + 195 * 0.62f), 0, 255);
+            return Color.FromArgb(r, g, b);
         }
 
         private static Color ComputeShadedColor(
@@ -254,16 +345,46 @@ namespace PaintLike.Teddy
             Graphics g,
             TeddyMesh mesh,
             Vector3[] screenVerts,
-            bool[] isFrontFacing)
+            bool[] isFrontFacing,
+            bool isGhostPiece = false,
+            bool isOpenHollow = false)
         {
-            using (Pen silhouettePen = new Pen(Color.FromArgb(30, 58, 95), 2.8f))
-            using (Pen creasePen = new Pen(Color.FromArgb(95, 51, 65, 85), 1.1f))
+            Color silColor = isGhostPiece ? Color.FromArgb(95, 71, 85, 105) : Color.FromArgb(30, 58, 95);
+            Color crsColor = isGhostPiece ? Color.FromArgb(55, 71, 85, 105) : Color.FromArgb(95, 51, 65, 85);
+
+            using (Pen silhouettePen = new Pen(silColor, isGhostPiece ? 1.8f : 2.8f))
+            using (Pen creasePen = new Pen(crsColor, 1.1f))
             {
                 silhouettePen.StartCap = LineCap.Round;
                 silhouettePen.EndCap = LineCap.Round;
+                if (isGhostPiece)
+                {
+                    silhouettePen.DashPattern = new float[] { 3f, 3f };
+                }
 
                 foreach (var edge in mesh.Edges)
                 {
+                    bool leftCap = edge.TriLeft >= 0 && mesh.Triangles[edge.TriLeft].IsCutCap;
+                    bool rightCap = edge.TriRight >= 0 && mesh.Triangles[edge.TriRight].IsCutCap;
+
+                    if (isOpenHollow && (leftCap || rightCap))
+                    {
+                        continue;
+                    }
+
+                    if (leftCap && rightCap)
+                    {
+                        // Cạnh bên trong bề mặt vết cắt: chỉ vẽ nét gờ mảnh tại các đỉnh gấp khúc Zíc-zắc / Bậc thang
+                        float capDot = Vector3.Dot(mesh.Triangles[edge.TriLeft].FaceNormal, mesh.Triangles[edge.TriRight].FaceNormal);
+                        if (capDot < 0.75f)
+                        {
+                            Vector3 pA = screenVerts[edge.A];
+                            Vector3 pB = screenVerts[edge.B];
+                            g.DrawLine(creasePen, pA.X, pA.Y, pB.X, pB.Y);
+                        }
+                        continue;
+                    }
+
                     bool leftFront = edge.TriLeft >= 0 && isFrontFacing[edge.TriLeft];
                     bool rightFront = edge.TriRight >= 0 && isFrontFacing[edge.TriRight];
 
@@ -341,17 +462,30 @@ namespace PaintLike.Teddy
             Graphics g,
             TeddyMesh mesh,
             VirtualTrackballCamera camera,
-            Size viewport)
+            Size viewport,
+            bool isGhostPiece = false,
+            TeddyCutSurfaceViewMode cutSurfaceViewMode = TeddyCutSurfaceViewMode.HighlightedCrossSection)
         {
             foreach (var sl in mesh.SurfaceLines)
             {
-                DrawSingle3DPolyline(g, sl, camera, viewport, false);
+                DrawSingle3DPolyline(g, sl, camera, viewport, false, isGhostPiece);
+            }
+
+            // Vẽ đường viền đánh dấu vị trí thiết diện mặt cắt (nếu đang bật chế độ Tô nổi mặt cắt hoặc Mở rỗng lòng khối)
+            if (cutSurfaceViewMode != TeddyCutSurfaceViewMode.SameAsBodyColor && mesh.CutSectionRings.Count > 0)
+            {
+                foreach (var cr in mesh.CutSectionRings)
+                {
+                    DrawSingle3DPolyline(g, cr, camera, viewport, false, isGhostPiece,
+                        overrideColor: isGhostPiece ? Color.FromArgb(105, 225, 29, 72) : Color.FromArgb(225, 225, 29, 72),
+                        overrideWidth: isGhostPiece ? 2.0f : 2.8f);
+                }
             }
 
             // Vẽ vòng chọn màu đỏ khi đang ở Extrusion Mode (Mục 4.4 - Hình 3i)
             if (mesh.ActiveBaseRing != null)
             {
-                DrawSingle3DPolyline(g, mesh.ActiveBaseRing, camera, viewport, true);
+                DrawSingle3DPolyline(g, mesh.ActiveBaseRing, camera, viewport, true, isGhostPiece);
             }
         }
 
@@ -360,12 +494,19 @@ namespace PaintLike.Teddy
             TeddySurfaceLine line,
             VirtualTrackballCamera camera,
             Size viewport,
-            bool isHighlightRing)
+            bool isHighlightRing,
+            bool isGhostPiece = false,
+            Color? overrideColor = null,
+            float? overrideWidth = null)
         {
             if (line.Points.Count < 2) return;
 
-            Color c = isHighlightRing ? Color.FromArgb(239, 68, 68) : line.StrokeColor;
-            float w = isHighlightRing ? 3.6f : line.StrokeWidth;
+            Color c = overrideColor ?? (isHighlightRing ? Color.FromArgb(239, 68, 68) : line.StrokeColor);
+            if (isGhostPiece && !overrideColor.HasValue)
+            {
+                c = Color.FromArgb(90, c.R, c.G, c.B);
+            }
+            float w = overrideWidth ?? (isHighlightRing ? 3.6f : line.StrokeWidth);
 
             using (Pen p = new Pen(c, w))
             {

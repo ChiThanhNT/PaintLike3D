@@ -44,13 +44,7 @@ namespace PaintLike.Teddy
             if (totalLen < 12f)
                 return PaintingStrokeIntent.None;
 
-            // 1. Kiểm tra cử chỉ gạch xóa (Scribbling: sl / pl > 1.5 - Chú thích 1 trang 4)
-            if (StrokeProcessor.IsScribbling(rawStroke, out scribbleRatio))
-            {
-                return PaintingStrokeIntent.ErasePaintedStrokes;
-            }
-
-            // 2. Lấy mẫu nét vẽ và bắn tia kiểm tra điểm đầu, điểm cuối và các điểm giữa có chạm vật thể không
+            // 1. Lấy mẫu nét vẽ và bắn tia kiểm tra điểm đầu, điểm cuối và các điểm giữa có chạm vật thể không
             List<PointF> resampled = StrokeProcessor.ResampleUniform(rawStroke, 8f, false);
             if (resampled.Count < 3)
                 return PaintingStrokeIntent.None;
@@ -68,10 +62,18 @@ namespace PaintLike.Teddy
                 }
             }
 
-            // 3. Nếu điểm đầu VÀ điểm cuối đều nằm ngoài bóng vật thể, nhưng phần giữa cắt ngang qua vật thể -> CUTTING (Mục 4.5)
-            if (!startHits && !endHits && hitCount >= 2)
+            // 2. Nếu điểm đầu VÀ điểm cuối đều nằm ngoài bóng vật thể, nhưng phần giữa cắt ngang qua vật thể -> CUTTING (Mục 4.5)
+            // Kiểm tra trước IsScribbling để đường cắt tự do hình Zíc-zắc / Lượn sóng xuyên qua vật thể luôn được nhận diện là Cắt!
+            float chordSpan = StrokeProcessor.Distance(rawStroke[0], rawStroke[rawStroke.Count - 1]);
+            if (!startHits && !endHits && hitCount >= 2 && chordSpan >= 32f)
             {
                 return PaintingStrokeIntent.CutObject;
+            }
+
+            // 3. Kiểm tra cử chỉ gạch xóa (Scribbling: sl / pl > 1.5 - Chú thích 1 trang 4)
+            if (StrokeProcessor.IsScribbling(rawStroke, out scribbleRatio))
+            {
+                return PaintingStrokeIntent.ErasePaintedStrokes;
             }
 
             // 4. Nếu nét vẽ nằm trên bề mặt vật thể

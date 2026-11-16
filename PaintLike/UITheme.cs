@@ -42,7 +42,16 @@ namespace PaintLike
         EyeClosed,
         ZoomIn,
         ZoomOut,
-        Cube3D
+        Cube3D,
+        CutFreehand,
+        CutStraight,
+        CutZigzag,
+        CutCurved,
+        CutWave,
+        CutStepped,
+        CutChevronV,
+        Scissors,
+        SplitMesh
     }
 
     public enum ButtonVariant
@@ -739,6 +748,95 @@ namespace PaintLike
                         g.DrawLine(pen, leftPt, midPt);
                         g.DrawLine(pen, rightPt, midPt);
                         g.DrawLine(pen, botPt, midPt);
+                        break;
+
+                    case IconType.CutFreehand:
+                        g.DrawBezier(pen,
+                            new PointF(x + 1f, cy + h * 0.22f),
+                            new PointF(x + w * 0.3f, y + 1f),
+                            new PointF(x + w * 0.65f, y + h - 1f),
+                            new PointF(x + w - 1f, cy - h * 0.25f));
+                        g.FillEllipse(brush, x, cy + h * 0.22f - 1.5f, 3f, 3f);
+                        g.FillEllipse(brush, x + w - 3f, cy - h * 0.25f - 1.5f, 3f, 3f);
+                        break;
+
+                    case IconType.CutStraight:
+                        g.DrawLine(pen, x + 1f, cy, x + w - 1f, cy);
+                        g.FillEllipse(brush, x, cy - 1.8f, 3.6f, 3.6f);
+                        g.FillEllipse(brush, x + w - 3.6f, cy - 1.8f, 3.6f, 3.6f);
+                        break;
+
+                    case IconType.CutZigzag:
+                        PointF[] zz = new PointF[]
+                        {
+                            new PointF(x + 1f, cy),
+                            new PointF(x + w * 0.22f, y + 2f),
+                            new PointF(x + w * 0.44f, y + h - 2f),
+                            new PointF(x + w * 0.66f, y + 2f),
+                            new PointF(x + w * 0.84f, y + h - 2f),
+                            new PointF(x + w - 1f, cy)
+                        };
+                        g.DrawLines(pen, zz);
+                        break;
+
+                    case IconType.CutCurved:
+                        g.DrawBezier(pen,
+                            new PointF(x + 1f, cy + h * 0.25f),
+                            new PointF(x + w * 0.32f, y + 1f),
+                            new PointF(x + w * 0.68f, y + 1f),
+                            new PointF(x + w - 1f, cy + h * 0.25f));
+                        break;
+
+                    case IconType.CutWave:
+                        PointF[] wavePts = new PointF[13];
+                        for (int i = 0; i < wavePts.Length; i++)
+                        {
+                            float t = i / (float)(wavePts.Length - 1);
+                            float wx = x + 1f + t * (w - 2f);
+                            float wy = cy - MathF.Sin(t * MathF.PI * 2f) * (h * 0.34f);
+                            wavePts[i] = new PointF(wx, wy);
+                        }
+                        g.DrawLines(pen, wavePts);
+                        break;
+
+                    case IconType.CutStepped:
+                        PointF[] stepPts = new PointF[]
+                        {
+                            new PointF(x + 1f, cy + h * 0.25f),
+                            new PointF(x + w * 0.32f, cy + h * 0.25f),
+                            new PointF(x + w * 0.32f, cy - h * 0.25f),
+                            new PointF(x + w * 0.68f, cy - h * 0.25f),
+                            new PointF(x + w * 0.68f, cy + h * 0.25f),
+                            new PointF(x + w - 1f, cy + h * 0.25f)
+                        };
+                        g.DrawLines(pen, stepPts);
+                        break;
+
+                    case IconType.CutChevronV:
+                        PointF[] vPts = new PointF[]
+                        {
+                            new PointF(x + 1f, y + 3f),
+                            new PointF(cx, y + h - 2f),
+                            new PointF(x + w - 1f, y + 3f)
+                        };
+                        g.DrawLines(pen, vPts);
+                        break;
+
+                    case IconType.Scissors:
+                        g.DrawEllipse(pen, x + 1f, y + 1.5f, 4.5f, 4.5f);
+                        g.DrawEllipse(pen, x + 1f, y + h - 6f, 4.5f, 4.5f);
+                        g.DrawLine(pen, x + 5f, y + 4.5f, x + w - 1f, y + h - 2.5f);
+                        g.DrawLine(pen, x + 5f, y + h - 4.5f, x + w - 1f, y + 2.5f);
+                        break;
+
+                    case IconType.SplitMesh:
+                        g.DrawRectangle(pen, x + 1f, y + 2f, w * 0.38f, h - 4f);
+                        g.DrawRectangle(pen, x + w * 0.62f, y + 2f, w * 0.38f - 1f, h - 4f);
+                        using (Pen dashSplit = new Pen(color, 1.3f))
+                        {
+                            dashSplit.DashPattern = new float[] { 2f, 2f };
+                            g.DrawLine(dashSplit, cx, y + 1f, cx, y + h - 1f);
+                        }
                         break;
                 }
             }

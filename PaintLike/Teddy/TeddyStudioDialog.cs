@@ -70,6 +70,17 @@ namespace PaintLike.Teddy
         private Point _mouseDownPos = Point.Empty;
         private bool _hasMovedSignificantly = false;
 
+        // Trạng thái & Mẫu đường cắt 3D (Thẳng, Zíc-zắc, Cong, Lượn sóng, Bậc thang, Chữ V, Cắt tự do)
+        private TeddyCutPattern _activeCutPattern = TeddyCutPattern.Freehand;
+        private TeddyCutActionMode _cutActionMode = TeddyCutActionMode.RemoveOneSide;
+        private TeddyCutPieceVisibility _cutPieceVisibility = TeddyCutPieceVisibility.Hidden;
+        private TeddyCutSurfaceViewMode _cutSurfaceViewMode = TeddyCutSurfaceViewMode.HighlightedCrossSection;
+        private Color _cutFillColor = Color.FromArgb(251, 146, 60); // Màu tô nổi bật tại vị trí bị cắt
+        private bool _isCutToolActive = false;
+        private bool _flipCutRemoveSide = false;
+        private float _cutAmplitudePx = 22f;
+        private int _cutPeriodCount = 5;
+
         // UI Controls
         private Panel _panelTopRibbon = null!;
         private Panel _panelAlgoStepBar = null!;
@@ -80,6 +91,12 @@ namespace PaintLike.Teddy
         private Label _lblMeshStats = null!;
         private ToolTip _toolTip = null!;
         private readonly Dictionary<TeddyAlgorithmStepView, Button> _stepViewButtons = new Dictionary<TeddyAlgorithmStepView, Button>();
+        private readonly Dictionary<TeddyCutPattern, Button> _cutPatternButtons = new Dictionary<TeddyCutPattern, Button>();
+
+        private Button _btnCutFillColor = null!;
+        private Button _btnCutSurfaceViewMode = null!;
+        private Button _btnFlipCutSide = null!;
+        private Button _btnQuickCutNow = null!;
 
         private Button _btnInitBlank = null!;
         private Button _btnSphere = null!;
@@ -140,32 +157,32 @@ namespace PaintLike.Teddy
                 null, _panelTopRibbon, new object[] { true });
             _panelTopRibbon.Paint += PanelTopRibbon_Paint;
 
-            // --- Nhóm 1: KHỞI TẠO, BIẾN DẠNG & LỊCH SỬ (X: 10..350) ---
-            _btnInitBlank = CreateRibbonButton(new Rectangle(18, 12, 80, 30), IconType.Plus, "Init Mới", ButtonVariant.Primary,
+            // --- Nhóm 1: KHỞI TẠO, BIẾN DẠNG & LỊCH SỬ (X: 8..322) ---
+            _btnInitBlank = CreateRibbonButton(new Rectangle(14, 12, 72, 30), IconType.Plus, "Init Mới", ButtonVariant.Primary,
                 "Khởi tạo vùng vẽ mới để phác thảo nét 2D tạo khối 3D (Press 'Init' button - Hình 1 & 4)");
             _btnInitBlank.Click += (s, e) => ResetToBlankCreationMode();
 
-            _btnSphere = CreateRibbonButton(new Rectangle(102, 12, 78, 30), IconType.Circle, "Khối Cầu", ButtonVariant.Default,
+            _btnSphere = CreateRibbonButton(new Rectangle(89, 12, 72, 30), IconType.Circle, "Khối Cầu", ButtonVariant.Default,
                 "Tạo sẵn khối Cầu 3D mẫu (Sphere - Mục 4.2)");
             _btnSphere.Click += (s, e) => LoadPrimitiveMesh(TeddyMesh.CreateSphere(135f, 28, 18), "Đã nạp Khối Cầu 3D mẫu. Khoanh tròn trên mặt để Đùn (Extrude), hoặc kẻ xuyên qua để Cắt (Cut).");
 
-            _btnCube = CreateRibbonButton(new Rectangle(184, 12, 78, 30), IconType.Rectangle, "Khối Hộp", ButtonVariant.Default,
+            _btnCube = CreateRibbonButton(new Rectangle(164, 12, 72, 30), IconType.Rectangle, "Khối Hộp", ButtonVariant.Default,
                 "Tạo sẵn khối Lập phương chia lưới mịn (Subdivided Cube - Mục 4.2)");
             _btnCube.Click += (s, e) => LoadPrimitiveMesh(TeddyMesh.CreateCube(105f, 6), "Đã nạp Khối Hộp 3D mẫu. Khoanh tròn trên mặt để Đùn (Extrude), hoặc kẻ xuyên qua để Cắt (Cut).");
 
-            _btnBendMode = CreateRibbonButton(new Rectangle(266, 12, 78, 30), IconType.Bezier, "Uốn (Bend)", ButtonVariant.Default,
+            _btnBendMode = CreateRibbonButton(new Rectangle(239, 12, 76, 30), IconType.Bezier, "Uốn (Bend)", ButtonVariant.Default,
                 "Chế độ Uốn biến dạng mô hình bằng 2 nét vẽ: Nét 1 (Trục chuẩn Reference) -> Nét 2 (Trục đích Target) (Mục 4.7 - Hình 11)");
             _btnBendMode.Click += (s, e) => ToggleBendingMode();
 
-            _btnUndo = CreateRibbonButton(new Rectangle(18, 46, 64, 28), IconType.Undo, "Hoàn tác", ButtonVariant.Default,
+            _btnUndo = CreateRibbonButton(new Rectangle(14, 46, 58, 28), IconType.Undo, "Hoàn tác", ButtonVariant.Default,
                 "Hoàn tác bước dựng hình 3D trước đó (Ctrl+Z)");
             _btnUndo.Click += (s, e) => PerformUndo();
 
-            _btnRedo = CreateRibbonButton(new Rectangle(84, 46, 64, 28), IconType.Redo, "Làm lại", ButtonVariant.Default,
+            _btnRedo = CreateRibbonButton(new Rectangle(75, 46, 58, 28), IconType.Redo, "Làm lại", ButtonVariant.Default,
                 "Làm lại bước vừa hoàn tác (Ctrl+Y)");
             _btnRedo.Click += (s, e) => PerformRedo();
 
-            _btnSmoothMesh = CreateRibbonButton(new Rectangle(150, 46, 64, 28), IconType.Filter, "Làm mịn", ButtonVariant.Default,
+            _btnSmoothMesh = CreateRibbonButton(new Rectangle(136, 46, 58, 28), IconType.Filter, "Làm mịn", ButtonVariant.Default,
                 "Làm mịn toàn bộ bề mặt lưới 3D bằng thuật toán Taubin Surface Fairing (Mục 5.1 & 5.5)");
             _btnSmoothMesh.Click += (s, e) =>
             {
@@ -184,29 +201,29 @@ namespace PaintLike.Teddy
                 _viewportPanel.Invalidate();
             };
 
-            Button btnFillRegion = CreateRibbonButton(new Rectangle(216, 46, 64, 28), IconType.ColorPalette, "Tô vùng", ButtonVariant.Default,
+            Button btnFillRegion = CreateRibbonButton(new Rectangle(197, 46, 58, 28), IconType.ColorPalette, "Tô vùng", ButtonVariant.Default,
                 "Tô màu các mặt tam giác nằm trong Vòng chọn đỏ bằng Màu bút hiện tại (Phím tắt: F - Hình 2 bài báo)");
             btnFillRegion.Click += (s, e) => FillSelectedBaseRingWithColor();
 
-            _btnDeleteLine = CreateRibbonButton(new Rectangle(282, 46, 66, 28), IconType.Trash, "Xóa", ButtonVariant.Default,
+            _btnDeleteLine = CreateRibbonButton(new Rectangle(258, 46, 57, 28), IconType.Trash, "Xóa", ButtonVariant.Default,
                 "Click chọn một nét vẽ hoặc khối 3D để xóa (Phím tắt: Delete hoặc Backspace)");
             _btnDeleteLine.Enabled = false;
             _btnDeleteLine.Click += (s, e) => DeleteSelectedEntity();
 
-            // --- Nhóm 2: KIỂU HIỂN THỊ 3D & CAMERA (X: 360..704) ---
-            _btnStylePenInk = CreateRibbonButton(new Rectangle(368, 12, 106, 30), IconType.Rename, "Pen & Ink", ButtonVariant.Default,
+            // --- Nhóm 2: KIỂU HIỂN THỊ 3D & CAMERA (X: 328..614) ---
+            _btnStylePenInk = CreateRibbonButton(new Rectangle(334, 12, 88, 30), IconType.Rename, "Pen & Ink", ButtonVariant.Default,
                 "Chế độ phác họa nét mực + đường viền đen Silhouette thời gian thực (Hình 1 bài báo SIGGRAPH '99)");
             _btnStylePenInk.Click += (s, e) => SetRenderStyle(TeddyRenderStyle.PenAndInk);
 
-            _btnStyleSmooth = CreateRibbonButton(new Rectangle(478, 12, 106, 30), IconType.Opacity, "Tô bóng 3D", ButtonVariant.Default,
+            _btnStyleSmooth = CreateRibbonButton(new Rectangle(425, 12, 88, 30), IconType.Opacity, "Tô bóng 3D", ButtonVariant.Default,
                 "Chế độ tô bóng khối Studio 3D mượt (Phong / Lambert + Rim Light)");
             _btnStyleSmooth.Click += (s, e) => SetRenderStyle(TeddyRenderStyle.SmoothShaded);
 
-            _btnStyleWire = CreateRibbonButton(new Rectangle(588, 12, 108, 30), IconType.Hexagon, "Lưới + Spine", ButtonVariant.Default,
+            _btnStyleWire = CreateRibbonButton(new Rectangle(516, 12, 92, 30), IconType.Hexagon, "Lưới + Spine", ButtonVariant.Default,
                 "Hiển thị cấu trúc lưới tam giác và Trục Xương Sống (Chordal Axis / Spine - Hình 12 & 13e)");
             _btnStyleWire.Click += (s, e) => SetRenderStyle(TeddyRenderStyle.WireframeSpine);
 
-            _btnResetCam = CreateRibbonButton(new Rectangle(368, 46, 106, 28), IconType.ZoomIn, "Reset Góc", ButtonVariant.Default,
+            _btnResetCam = CreateRibbonButton(new Rectangle(334, 46, 88, 28), IconType.ZoomIn, "Reset Góc", ButtonVariant.Default,
                 "Đưa góc xoay Camera Trackball và độ phóng đại về mặc định");
             _btnResetCam.Click += (s, e) =>
             {
@@ -214,7 +231,7 @@ namespace PaintLike.Teddy
                 _viewportPanel.Invalidate();
             };
 
-            _btnModelColor = new Button { Bounds = new Rectangle(478, 46, 106, 28) };
+            _btnModelColor = new Button { Bounds = new Rectangle(425, 46, 88, 28) };
             UITheme.StyleButton(_btnModelColor, IconType.ColorPalette, "Màu khối", ButtonVariant.Default, false,
                 _toolTip, "Đổi màu sắc chất liệu của mô hình 3D", () => _modelBaseColor);
             _btnModelColor.Click += (s, e) =>
@@ -237,7 +254,7 @@ namespace PaintLike.Teddy
             };
             _panelTopRibbon.Controls.Add(_btnModelColor);
 
-            _btnPaintColor = new Button { Bounds = new Rectangle(588, 46, 108, 28) };
+            _btnPaintColor = new Button { Bounds = new Rectangle(516, 46, 92, 28) };
             UITheme.StyleButton(_btnPaintColor, IconType.ColorPalette, "Màu bút", ButtonVariant.Default, false,
                 _toolTip, "Đổi màu bút vẽ trang trí trực tiếp lên bề mặt 3D (Surface Painting - Mục 4.3)", () => _surfacePaintColor);
             _btnPaintColor.Click += (s, e) =>
@@ -251,18 +268,89 @@ namespace PaintLike.Teddy
             };
             _panelTopRibbon.Controls.Add(_btnPaintColor);
 
-            // --- Nhóm 3: TỆP .OBJ & TÍCH HỢP LAYER 2D (X: 712..916) ---
-            _btnImportObj = CreateRibbonButton(new Rectangle(720, 12, 90, 30), IconType.Import, "Mở .OBJ", ButtonVariant.Default,
+            // --- Nhóm 3: MẪU ĐƯỜNG CẮT 3D (X: 620..1044) ---
+            AddCutPatternButton(new Rectangle(626, 12, 66, 30), IconType.CutFreehand, "Tự Do", TeddyCutPattern.Freehand,
+                "Cắt tự do (Freehand Cut): Kéo chuột vẽ đường cắt tự do bất kỳ xuyên qua vật thể 3D");
+            AddCutPatternButton(new Rectangle(695, 12, 64, 30), IconType.CutStraight, "Thẳng", TeddyCutPattern.Straight,
+                "Đường cắt Thẳng (Straight Cut): Kéo tạo mặt cắt phẳng thẳng tắp ngang qua vật thể 3D");
+            AddCutPatternButton(new Rectangle(762, 12, 68, 30), IconType.CutZigzag, "Zíc-zắc", TeddyCutPattern.Zigzag,
+                "Đường cắt Zíc-zắc / Răng cưa (Zigzag Cut): Cắt ngang vật thể theo biên dạng răng cưa nhọn");
+            AddCutPatternButton(new Rectangle(833, 12, 62, 30), IconType.CutCurved, "Cong", TeddyCutPattern.Curved,
+                "Đường cắt Cong (Curved Arch Cut): Cắt ngang vật thể theo cung vòm cong mềm mại");
+            AddCutPatternButton(new Rectangle(898, 12, 64, 30), IconType.CutWave, "Sóng", TeddyCutPattern.Wave,
+                "Đường cắt Lượn Sóng (Sine Wave Cut): Cắt ngang vật thể theo đường sóng hình Sin");
+            AddCutPatternButton(new Rectangle(965, 12, 73, 30), IconType.CutStepped, "Bậc Thang", TeddyCutPattern.Stepped,
+                "Đường cắt Bậc Thang (Stepped Cut): Cắt ngang vật thể theo rãnh răng vuông bậc thang");
+
+            AddCutPatternButton(new Rectangle(626, 46, 58, 28), IconType.CutChevronV, "Chữ V", TeddyCutPattern.ChevronV,
+                "Đường cắt Chữ V (Chevron V-Cut): Cắt vát mũi nhọn chữ V vào giữa vật thể 3D");
+
+            _btnCutFillColor = new Button { Bounds = new Rectangle(687, 46, 82, 28) };
+            UITheme.StyleButton(_btnCutFillColor, IconType.ColorPalette, "Màu cắt", ButtonVariant.Default, false,
+                _toolTip, "Chọn màu tô thêm vào diện tích tại vị trí bị cắt", () => _cutFillColor);
+            _btnCutFillColor.Click += (s, e) =>
+            {
+                using var cd = new ColorDialog { Color = _cutFillColor, FullOpen = true };
+                if (cd.ShowDialog(this) == DialogResult.OK)
+                {
+                    _cutFillColor = cd.Color;
+                    _cutSurfaceViewMode = TeddyCutSurfaceViewMode.HighlightedCrossSection;
+                    UpdateCutPatternToolbarState();
+                    _btnCutFillColor.Invalidate();
+                    _viewportPanel.Invalidate();
+                }
+            };
+            _panelTopRibbon.Controls.Add(_btnCutFillColor);
+
+            _btnCutSurfaceViewMode = new Button { Bounds = new Rectangle(772, 46, 108, 28) };
+            _btnCutSurfaceViewMode.Click += (s, e) =>
+            {
+                _cutSurfaceViewMode = _cutSurfaceViewMode == TeddyCutSurfaceViewMode.HighlightedCrossSection
+                    ? TeddyCutSurfaceViewMode.OpenHollowInterior
+                    : TeddyCutSurfaceViewMode.HighlightedCrossSection;
+                UpdateCutPatternToolbarState();
+                string surfMsg = _cutSurfaceViewMode == TeddyCutSurfaceViewMode.HighlightedCrossSection
+                    ? "Chế độ [Vị trí cắt: Hiện]: Đang tô màu nổi bật vào diện tích tại vị trí bị cắt."
+                    : "Chế độ [Vị trí cắt: Ẩn]: Đã ẩn lớp tô mặt cắt để bạn nhìn thẳng vào bên trong vị trí bị cắt!";
+                UpdateGestureModeState(surfMsg);
+                _viewportPanel.Invalidate();
+            };
+            _panelTopRibbon.Controls.Add(_btnCutSurfaceViewMode);
+
+            _btnFlipCutSide = new Button { Bounds = new Rectangle(883, 46, 66, 28) };
+            UITheme.StyleButton(_btnFlipCutSide, IconType.Arrows, "Đảo bên", ButtonVariant.Default, false,
+                _toolTip, "Đảo ngược phía bị cắt (Trái <-> Phải / Trên <-> Dưới)");
+            _btnFlipCutSide.Click += (s, e) =>
+            {
+                _flipCutRemoveSide = !_flipCutRemoveSide;
+                UITheme.SetButtonSelected(_btnFlipCutSide, _flipCutRemoveSide);
+                UpdateGestureModeState(_flipCutRemoveSide
+                    ? "Đã bật [Đảo bên cắt]: Phía bị cắt đã được đổi sang chiều ngược lại."
+                    : "Đã trở về chiều cắt mặc định (cắt phía bên trái hướng kéo chuột).");
+                _viewportPanel.Invalidate();
+            };
+            _panelTopRibbon.Controls.Add(_btnFlipCutSide);
+
+            _btnQuickCutNow = new Button { Bounds = new Rectangle(952, 46, 86, 28) };
+            UITheme.StyleButton(_btnQuickCutNow, IconType.Scissors, "Cắt Ngang", ButtonVariant.Danger, false,
+                _toolTip, "Thực hiện cắt ngang qua chính giữa vật thể 3D ngay lập tức theo Mẫu Đường Cắt đang chọn!");
+            _btnQuickCutNow.Click += (s, e) => PerformQuickHorizontalCut();
+            _panelTopRibbon.Controls.Add(_btnQuickCutNow);
+
+            // --- Nhóm 4: TỆP .OBJ & TÍCH HỢP LAYER 2D (X: 1050..1212) ---
+            _btnImportObj = CreateRibbonButton(new Rectangle(1056, 12, 72, 30), IconType.Import, "Mở .OBJ", ButtonVariant.Default,
                 "Mở file mô hình 3D định dạng chuẩn Wavefront .OBJ từ máy tính");
             _btnImportObj.Click += BtnImportObj_Click;
 
-            _btnExportObj = CreateRibbonButton(new Rectangle(814, 12, 94, 30), IconType.Save, "Lưu .OBJ", ButtonVariant.Accent,
+            _btnExportObj = CreateRibbonButton(new Rectangle(1131, 12, 75, 30), IconType.Save, "Lưu .OBJ", ButtonVariant.Accent,
                 "Xuất mô hình 3D hiện tại ra file .OBJ tiêu chuẩn (Mục 6 bài báo)");
             _btnExportObj.Click += BtnExportObj_Click;
 
-            _btnSendToLayer = CreateRibbonButton(new Rectangle(720, 46, 188, 28), IconType.Layers, "Chèn vào Layer 2D", ButtonVariant.Success,
+            _btnSendToLayer = CreateRibbonButton(new Rectangle(1056, 46, 150, 28), IconType.Layers, "Chèn vào Layer 2D", ButtonVariant.Success,
                 "Kết xuất góc nhìn 3D hiện tại (nền trong suốt) và thêm thành một Layer mới trong PaintLike");
             _btnSendToLayer.Click += BtnSendToLayer_Click;
+
+            UpdateCutPatternToolbarState();
 
             // 1B. Thanh Trực Quan Hóa Từng Bước Thuật Toán (Hình 13, 14, 15) & Mẫu Thử Bài Báo (Hình 1 & 5)
             _panelAlgoStepBar = new Panel
@@ -393,6 +481,89 @@ namespace PaintLike.Teddy
             this.Controls.Add(_panelStatusBar);
         }
 
+        private void AddCutPatternButton(Rectangle bounds, IconType icon, string label, TeddyCutPattern pattern, string tooltip)
+        {
+            Button btn = new Button { Bounds = bounds };
+            UITheme.StyleButton(btn, icon, label, ButtonVariant.Default, false, _toolTip, tooltip);
+            btn.Click += (s, e) => SelectCutPattern(pattern);
+            _panelTopRibbon.Controls.Add(btn);
+            _cutPatternButtons[pattern] = btn;
+        }
+
+        private void SelectCutPattern(TeddyCutPattern pattern)
+        {
+            if (_isCutToolActive && _activeCutPattern == pattern)
+            {
+                // Bấm lại vào nút mẫu đang bật -> Tắt chế độ kéo cắt trực tiếp (về chế độ Chuột Trái xoay 3D)
+                _isCutToolActive = false;
+                UpdateCutPatternToolbarState();
+                UpdateGestureModeState($"Đã tắt công cụ kéo cắt trực tiếp (Mẫu hiện tại: {TeddyCutPatternGenerator.GetPatternDisplayName(_activeCutPattern)}). Giữ Shift + Chuột Trái nếu muốn vẽ/cắt.");
+                _viewportPanel?.Invalidate();
+                return;
+            }
+
+            _activeCutPattern = pattern;
+            _isCutToolActive = true;
+            if (_gestureMode == TeddyGestureMode.Bending)
+            {
+                _bendReferenceStroke.Clear();
+                UITheme.SetButtonSelected(_btnBendMode, false);
+                _gestureMode = _sceneMeshes.Count == 0 ? TeddyGestureMode.Creation : TeddyGestureMode.Painting;
+            }
+
+            UpdateCutPatternToolbarState();
+            string pName = TeddyCutPatternGenerator.GetPatternDisplayName(pattern);
+            UpdateGestureModeState($"Đang chọn mẫu cắt [{pName}]: Kéo Chuột Trái ngang qua vật thể 3D để cắt (Chuột Phải xoay 3D), hoặc bấm 'Cắt Ngang Ngay'!");
+            _viewportPanel?.Invalidate();
+        }
+
+        private void UpdateCutPatternToolbarState()
+        {
+            foreach (var kvp in _cutPatternButtons)
+            {
+                bool isSelected = kvp.Key == _activeCutPattern && _isCutToolActive;
+                UITheme.SetButtonSelected(kvp.Value, isSelected);
+            }
+
+            if (_btnCutSurfaceViewMode != null)
+            {
+                if (_cutSurfaceViewMode == TeddyCutSurfaceViewMode.HighlightedCrossSection)
+                {
+                    UITheme.StyleButton(_btnCutSurfaceViewMode, IconType.EyeOpen, "Vị trí cắt: Hiện", ButtonVariant.Accent, false,
+                        _toolTip, "Đang HIỆN màu tô tại vị trí bị cắt. Bấm để ẨN nắp vết cắt và nhìn vào bên trong vị trí bị cắt!");
+                }
+                else
+                {
+                    UITheme.StyleButton(_btnCutSurfaceViewMode, IconType.EyeClosed, "Vị trí cắt: Ẩn", ButtonVariant.Default, false,
+                        _toolTip, "Đang ẨN mặt tô tại vị trí bị cắt để nhìn xuyên vào lòng khối. Bấm để HIỆN lại màu tô tại vị trí bị cắt!");
+                }
+            }
+        }
+
+        private void PerformQuickHorizontalCut()
+        {
+            Size vp = _viewportPanel.ClientSize;
+            if (vp.Width < 100 || vp.Height < 100) vp = new Size(1000, 520);
+
+            // Nếu chưa có khối 3D nào trong không gian, tự động khởi tạo Khối Cầu 3D để cắt thử ngay
+            if (_sceneMeshes.Count == 0 || _sceneMeshes.All(m => m.IsEmpty))
+            {
+                var sphere = TeddyMesh.CreateSphere(135f, 30, 20);
+                sphere.BaseColor = _modelBaseColor;
+                _sceneMeshes.Clear();
+                _sceneMeshes.Add(sphere);
+                _selectedMesh = sphere;
+                _camera.Reset();
+                _camera.Rotation = Quaternion.CreateFromYawPitchRoll(0.35f, -0.22f, 0f);
+                _gestureMode = TeddyGestureMode.Painting;
+            }
+
+            TeddyMesh target = _selectedMesh ?? _sceneMeshes.FirstOrDefault(m => !m.IsEmpty) ?? CurrentMesh;
+            List<PointF> autoStroke = TeddyCutPatternGenerator.CreateQuickHorizontalCutStroke(target, _camera, vp);
+            ExecuteCutWithActivePattern(autoStroke, target);
+            _viewportPanel.Invalidate();
+        }
+
         private void CreatePresetButton(Rectangle bounds, string label, string presetKey, Color presetColor, string tooltip)
         {
             Button btn = new Button { Bounds = bounds };
@@ -475,27 +646,10 @@ namespace PaintLike.Teddy
             Graphics g = e.Graphics;
             g.Clear(UITheme.BgToolbar);
 
-            UITheme.DrawRibbonGroup(g, new Rectangle(10, 5, 342, 85), "KHỞI TẠO & PHÉP BIẾN ĐỔI (TV1 & TV2)");
-            UITheme.DrawRibbonGroup(g, new Rectangle(360, 5, 344, 85), "CAMERA TRACKBALL & RENDER (TV3)");
-            UITheme.DrawRibbonGroup(g, new Rectangle(712, 5, 204, 85), "XUẤT .OBJ & LAYER 2D");
-
-            // Bảng tóm tắt cử chỉ Hình 4 bên phải thanh công cụ (Bright Studio Light)
-            Rectangle helpRect = new Rectangle(924, 6, Math.Max(220, _panelTopRibbon.Width - 934), 83);
-            using (GraphicsPath hp = UITheme.CreateRoundedRect(helpRect, 8))
-            using (SolidBrush hb = new SolidBrush(UITheme.BgPanelHeader))
-            using (Pen border = new Pen(UITheme.BorderSubtle, 1f))
-            {
-                g.FillPath(hb, hp);
-                g.DrawPath(border, hp);
-            }
-
-            string guide =
-                "• Chuột Trái / Phải: Xoay tự do mô hình 3D 360° | Con lăn: Zoom | Giữa: Pan\r\n" +
-                "• Click Chuột Trái: Chọn nét 2D hoặc Khối 3D để xóa (Phím Delete / Nút Xóa)\r\n" +
-                "• Giữ Shift + Chuột Trái: Vẽ nét kín tạo khối 3D mới, vẽ lên mặt để tô nét\r\n" +
-                "• Từ Vòng đỏ: Vẽ vòm để Đùn / Khoét lõm | Uốn: Bấm 'Uốn (Bend)' rồi vẽ 2 nét";
-            TextRenderer.DrawText(g, guide, UITheme.FontSmall, new Rectangle(helpRect.X + 8, helpRect.Y + 3, helpRect.Width - 12, helpRect.Height - 6),
-                UITheme.TextSecondary, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
+            UITheme.DrawRibbonGroup(g, new Rectangle(8, 5, 314, 85), "KHỞI TẠO & BIẾN ĐỔI (TV1 & TV2)");
+            UITheme.DrawRibbonGroup(g, new Rectangle(328, 5, 286, 85), "CAMERA TRACKBALL & RENDER (TV3)");
+            UITheme.DrawRibbonGroup(g, new Rectangle(620, 5, 424, 85), "MẪU ĐƯỜNG CẮT 3D (THẲNG, ZIKZAC, CONG, TỰ DO)");
+            UITheme.DrawRibbonGroup(g, new Rectangle(1050, 5, 162, 85), "XUẤT .OBJ & LAYER 2D");
 
             using Pen bottomLine = new Pen(UITheme.BorderDefault, 1f);
             g.DrawLine(bottomLine, 0, _panelTopRibbon.Height - 1, _panelTopRibbon.Width, _panelTopRibbon.Height - 1);
@@ -523,9 +677,9 @@ namespace PaintLike.Teddy
             }
             else if (e.Button == MouseButtons.Left)
             {
-                if (isShift)
+                if (isShift || _isCutToolActive)
                 {
-                    // Giữ Shift + Chuột Trái: Vẽ nét phác thảo tự do
+                    // Giữ Shift + Chuột Trái hoặc đang bật Công cụ Mẫu Đường Cắt: Vẽ nét hoặc kéo đường cắt
                     _isDrawingStroke = true;
                     _activeStroke.Clear();
                     _activeStroke.Add(e.Location);
@@ -571,7 +725,7 @@ namespace PaintLike.Teddy
             {
                 // Cập nhật con trỏ chuột khi rê chuột tự do trên viewport
                 bool isShift = Control.ModifierKeys.HasFlag(Keys.Shift);
-                _viewportPanel.Cursor = isShift ? Cursors.Cross : Cursors.Default;
+                _viewportPanel.Cursor = (isShift || _isCutToolActive) ? Cursors.Cross : Cursors.Default;
             }
         }
 
@@ -581,7 +735,7 @@ namespace PaintLike.Teddy
             {
                 _camera.StopInteraction();
                 bool isShift = Control.ModifierKeys.HasFlag(Keys.Shift);
-                _viewportPanel.Cursor = isShift ? Cursors.Cross : Cursors.Default;
+                _viewportPanel.Cursor = (isShift || _isCutToolActive) ? Cursors.Cross : Cursors.Default;
 
                 // Nếu là Chuột Trái không giữ Shift và chuột hầu như không di chuyển (Click đơn tại chỗ) -> Chọn nét vẽ
                 if (e.Button == MouseButtons.Left && !isShift && !_hasMovedSignificantly)
@@ -594,11 +748,20 @@ namespace PaintLike.Teddy
             if (e.Button == MouseButtons.Left && _isDrawingStroke)
             {
                 _isDrawingStroke = false;
+                bool isShift = Control.ModifierKeys.HasFlag(Keys.Shift);
+                if (_isCutToolActive && !isShift && !_hasMovedSignificantly)
+                {
+                    _activeStroke.Clear();
+                    HandleViewportClick(e.Location);
+                    _viewportPanel.Cursor = Cursors.Cross;
+                    _viewportPanel.Invalidate();
+                    return;
+                }
+
                 ClearSelection();
                 ProcessCompletedUserStroke(_activeStroke);
                 _activeStroke.Clear();
-                bool isShift = Control.ModifierKeys.HasFlag(Keys.Shift);
-                _viewportPanel.Cursor = isShift ? Cursors.Cross : Cursors.Default;
+                _viewportPanel.Cursor = (isShift || _isCutToolActive) ? Cursors.Cross : Cursors.Default;
                 _viewportPanel.Invalidate();
             }
         }
@@ -618,6 +781,34 @@ namespace PaintLike.Teddy
         /// </summary>
         private void ProcessCompletedUserStroke(List<PointF> rawStroke)
         {
+            // ---------------------------------------------------------------------
+            // 0. CHẾ ĐỘ CÔNG CỤ MẪU ĐƯỜNG CẮT ĐANG BẬT (_isCutToolActive)
+            // ---------------------------------------------------------------------
+            if (_isCutToolActive)
+            {
+                float dragLen = StrokeProcessor.ComputePolylineLength(rawStroke, false);
+                if (dragLen < 16f)
+                {
+                    return;
+                }
+
+                // Nếu chưa có khối 3D nào, tự động tạo Khối Cầu 3D ở giữa để cắt ngay
+                if (_sceneMeshes.Count == 0 || _sceneMeshes.All(m => m.IsEmpty))
+                {
+                    var sphere = TeddyMesh.CreateSphere(135f, 30, 20);
+                    sphere.BaseColor = _modelBaseColor;
+                    _sceneMeshes.Clear();
+                    _sceneMeshes.Add(sphere);
+                    _selectedMesh = sphere;
+                    _camera.Reset();
+                    _camera.Rotation = Quaternion.CreateFromYawPitchRoll(0.35f, -0.22f, 0f);
+                    _gestureMode = TeddyGestureMode.Painting;
+                }
+
+                ExecuteCutWithActivePattern(rawStroke, _selectedMesh);
+                return;
+            }
+
             // ---------------------------------------------------------------------
             // 1. CHẾ ĐỘ CREATION: Tạo mô hình 3D mới từ đường viền 2D (Mục 4.2 & 5.1)
             // ---------------------------------------------------------------------
@@ -808,23 +999,7 @@ namespace PaintLike.Teddy
                     break;
 
                 case PaintingStrokeIntent.CutObject:
-                    PushUndoState();
-                    if (TeddyExtrudeCutOp.TryCutMeshWithStroke(
-                        targetMesh!,
-                        rawStroke,
-                        _camera,
-                        _viewportPanel.ClientSize,
-                        out string cutMsg))
-                    {
-                        _isBaseRingFromCut = true;
-                        _gestureMode = TeddyGestureMode.Extrusion;
-                        UpdateGestureModeState(cutMsg);
-                    }
-                    else
-                    {
-                        RestoreSceneFromUndo();
-                        UpdateGestureModeState(cutMsg);
-                    }
+                    ExecuteCutWithActivePattern(rawStroke, targetMesh);
                     break;
 
                 case PaintingStrokeIntent.SelectExtrusionRing:
@@ -867,6 +1042,85 @@ namespace PaintLike.Teddy
             }
         }
 
+        private void ExecuteCutWithActivePattern(List<PointF> rawStroke, TeddyMesh? preferredTarget)
+        {
+            var candidates = new List<TeddyMesh>();
+            if (preferredTarget != null && !preferredTarget.IsEmpty && !(preferredTarget.IsCutOffPiece && _cutPieceVisibility == TeddyCutPieceVisibility.Hidden))
+            {
+                candidates.Add(preferredTarget);
+            }
+            foreach (var m in _sceneMeshes.Where(m => !m.IsEmpty && !m.IsCutOffPiece && m != preferredTarget).OrderByDescending(m => GetMeshAverageViewZ(m)))
+            {
+                candidates.Add(m);
+            }
+
+            if (candidates.Count == 0)
+            {
+                foreach (var m in _sceneMeshes.Where(m => !m.IsEmpty && !(m.IsCutOffPiece && _cutPieceVisibility == TeddyCutPieceVisibility.Hidden)))
+                    candidates.Add(m);
+            }
+
+            if (candidates.Count == 0) return;
+
+            PushUndoState();
+            int cutSuccessCount = 0;
+            string lastMsg = "";
+            var splitAdditions = new List<TeddyMesh>();
+
+            foreach (var mesh in candidates)
+            {
+                if (TeddyExtrudeCutOp.TryCutOrSplitMeshWithPattern(
+                    mesh,
+                    rawStroke,
+                    _activeCutPattern,
+                    _cutAmplitudePx,
+                    _cutPeriodCount,
+                    _flipCutRemoveSide,
+                    _cutActionMode,
+                    _camera,
+                    _viewportPanel.ClientSize,
+                    out TeddyMesh? secondHalf,
+                    out string msg))
+                {
+                    cutSuccessCount++;
+                    lastMsg = msg;
+                    if (secondHalf != null)
+                    {
+                        splitAdditions.Add(secondHalf);
+                    }
+                }
+                else if (string.IsNullOrEmpty(lastMsg))
+                {
+                    lastMsg = msg;
+                }
+            }
+
+            if (cutSuccessCount > 0)
+            {
+                if (splitAdditions.Count > 0)
+                {
+                    // Xóa các phần bị cắt cũ nếu người dùng đang ở chế độ Ẩn phần cắt để khung cảnh gọn gàng, chỉ giữ phần bị cắt mới nhất
+                    if (_cutPieceVisibility == TeddyCutPieceVisibility.Hidden)
+                    {
+                        _sceneMeshes.RemoveAll(m => m.IsCutOffPiece);
+                    }
+                    _sceneMeshes.AddRange(splitAdditions);
+                }
+
+                _selectedMesh = null;
+                _selectedSurfaceLine = null;
+                UpdateDeleteButtonState();
+                _isBaseRingFromCut = true;
+                _gestureMode = _isCutToolActive ? TeddyGestureMode.Painting : TeddyGestureMode.Extrusion;
+                UpdateGestureModeState(lastMsg);
+            }
+            else
+            {
+                RestoreSceneFromUndo();
+                UpdateGestureModeState(lastMsg);
+            }
+        }
+
         private void ViewportPanel_Paint(object? sender, PaintEventArgs e)
         {
             if (_algorithmStepView != TeddyAlgorithmStepView.Final3DModel && ActiveMesh != null && !ActiveMesh.IsEmpty && ActiveMesh.DebugInfo != null)
@@ -880,6 +1134,8 @@ namespace PaintLike.Teddy
                 return;
             }
 
+            bool isPreviewingCut = _isDrawingStroke && _activeStroke.Count >= 2 && _isCutToolActive;
+
             Color activeStrokePreviewColor = _gestureMode switch
             {
                 TeddyGestureMode.Creation => Color.FromArgb(220, 38, 38),
@@ -890,7 +1146,12 @@ namespace PaintLike.Teddy
                 _ => _surfacePaintColor
             };
 
-            if (_sceneMeshes.Count == 0)
+            var visibleMeshes = _sceneMeshes
+                .Where(m => !m.IsEmpty && !(m.IsCutOffPiece && _cutPieceVisibility == TeddyCutPieceVisibility.Hidden))
+                .OrderBy(m => GetMeshAverageViewZ(m))
+                .ToList();
+
+            if (visibleMeshes.Count == 0)
             {
                 TeddyRenderer.RenderScene(
                     e.Graphics,
@@ -898,33 +1159,37 @@ namespace PaintLike.Teddy
                     null,
                     _camera,
                     _renderStyle,
-                    _isDrawingStroke ? _activeStroke : null,
+                    (_isDrawingStroke && !isPreviewingCut) ? _activeStroke : null,
                     activeStrokePreviewColor,
-                    drawBackground: true);
+                    drawBackground: true,
+                    cutPieceVisibility: _cutPieceVisibility,
+                    cutSurfaceViewMode: _cutSurfaceViewMode,
+                    cutFillColor: _cutFillColor);
 
-                if (!_isDrawingStroke)
+                if (!_isDrawingStroke && _sceneMeshes.Count == 0)
                 {
                     DrawEmptyCanvasHint(e.Graphics, _viewportPanel.ClientSize);
                 }
             }
             else
             {
-                // Sắp xếp các khối 3D theo độ sâu View Z (xa vẽ trước, gần vẽ sau)
-                var sortedMeshes = _sceneMeshes.Where(m => !m.IsEmpty).OrderBy(m => GetMeshAverageViewZ(m)).ToList();
-
                 bool isFirst = true;
-                foreach (var mesh in sortedMeshes)
+                for (int idx = 0; idx < visibleMeshes.Count; idx++)
                 {
-                    bool isLast = (mesh == sortedMeshes[sortedMeshes.Count - 1]);
+                    var mesh = visibleMeshes[idx];
+                    bool isLast = (idx == visibleMeshes.Count - 1);
                     TeddyRenderer.RenderScene(
                         e.Graphics,
                         _viewportPanel.ClientSize,
                         mesh,
                         _camera,
                         _renderStyle,
-                        (isLast && _isDrawingStroke) ? _activeStroke : null,
+                        (isLast && _isDrawingStroke && !isPreviewingCut) ? _activeStroke : null,
                         activeStrokePreviewColor,
-                        drawBackground: isFirst);
+                        drawBackground: isFirst,
+                        cutPieceVisibility: _cutPieceVisibility,
+                        cutSurfaceViewMode: _cutSurfaceViewMode,
+                        cutFillColor: _cutFillColor);
                     isFirst = false;
                 }
 
@@ -935,10 +1200,16 @@ namespace PaintLike.Teddy
                 }
 
                 // 2. Khung viền hộp 3D Bounding Box cho Khối 3D đang chọn
-                if (_selectedMesh != null)
+                if (_selectedMesh != null && !(_selectedMesh.IsCutOffPiece && _cutPieceVisibility == TeddyCutPieceVisibility.Hidden))
                 {
                     DrawSelectedMesh3DBoundingBox(e.Graphics, _viewportPanel.ClientSize, _selectedMesh);
                 }
+            }
+
+            // Hiển thị Live Preview của Mẫu Đường Cắt (Thẳng, Zíc-zắc, Cong, Lượn sóng, Bậc thang, Chữ V, Cắt tự do)
+            if (isPreviewingCut)
+            {
+                DrawCutPreviewOverlay(e.Graphics);
             }
 
             // Nếu đang ở chế độ BENDING và đã vẽ Nét 1 (Reference Stroke), hiển thị đường chuẩn màu Cyan đứt nét
@@ -952,6 +1223,106 @@ namespace PaintLike.Teddy
                     e.Graphics.DrawLines(refPen, _bendReferenceStroke.ToArray());
                 }
             }
+        }
+
+        private void DrawCutPreviewOverlay(Graphics g)
+        {
+            if (_activeStroke.Count < 2) return;
+
+            List<PointF> poly = TeddyCutPatternGenerator.BuildPatternedCutPolyline(
+                _activeStroke,
+                _activeCutPattern,
+                _cutAmplitudePx,
+                _cutPeriodCount,
+                _flipCutRemoveSide,
+                out PointF startPt,
+                out PointF endPt,
+                out Vector2 removeNormal);
+
+            if (poly.Count < 2) return;
+
+            SmoothingMode old = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            // 1. Đường trục chuẩn đứt nét nối điểm đầu -> điểm cuối
+            using (Pen guidePen = new Pen(Color.FromArgb(120, 100, 116, 139), 1.4f))
+            {
+                guidePen.DashPattern = new float[] { 4f, 4f };
+                g.DrawLine(guidePen, startPt, endPt);
+            }
+
+            // 2. Lớp phát sáng (Glow) bao quanh mẫu đường cắt
+            using (Pen glowPen = new Pen(Color.FromArgb(72, 239, 68, 68), 7.0f))
+            {
+                glowPen.StartCap = LineCap.Round;
+                glowPen.EndCap = LineCap.Round;
+                glowPen.LineJoin = LineJoin.Round;
+                g.DrawLines(glowPen, poly.ToArray());
+            }
+
+            // 3. Đường cắt chính sắc nét màu Đỏ Coral / Rose
+            Color mainCutColor = _cutActionMode == TeddyCutActionMode.SplitIntoTwoMeshes
+                ? Color.FromArgb(2, 132, 199)
+                : Color.FromArgb(225, 29, 72);
+
+            using (Pen cutPen = new Pen(mainCutColor, 3.0f))
+            {
+                cutPen.StartCap = LineCap.Round;
+                cutPen.EndCap = LineCap.Round;
+                cutPen.LineJoin = LineJoin.Round;
+                g.DrawLines(cutPen, poly.ToArray());
+            }
+
+            // 4. Hai nút neo tròn ở Điểm đầu và Điểm cuối
+            using (SolidBrush whiteBrush = new SolidBrush(Color.White))
+            using (Pen anchorPen = new Pen(mainCutColor, 2.2f))
+            {
+                g.FillEllipse(whiteBrush, startPt.X - 5f, startPt.Y - 5f, 10f, 10f);
+                g.DrawEllipse(anchorPen, startPt.X - 5f, startPt.Y - 5f, 10f, 10f);
+                g.FillEllipse(whiteBrush, endPt.X - 5f, endPt.Y - 5f, 10f, 10f);
+                g.DrawEllipse(anchorPen, endPt.X - 5f, endPt.Y - 5f, 10f, 10f);
+            }
+
+            // 5. Mũi tên và nhãn chỉ báo phía bị xóa bỏ hoặc tách đôi tại trung điểm đường cắt
+            PointF midPt = poly[poly.Count / 2];
+            if (StrokeProcessor.Distance(startPt, endPt) > 36f)
+            {
+                PointF arrowEnd = new PointF(midPt.X + removeNormal.X * 28f, midPt.Y + removeNormal.Y * 28f);
+                using (Pen arrowPen = new Pen(mainCutColor, 2.2f))
+                {
+                    arrowPen.EndCap = LineCap.ArrowAnchor;
+                    g.DrawLine(arrowPen, midPt, arrowEnd);
+                    if (_cutActionMode == TeddyCutActionMode.SplitIntoTwoMeshes)
+                    {
+                        PointF arrowEnd2 = new PointF(midPt.X - removeNormal.X * 28f, midPt.Y - removeNormal.Y * 28f);
+                        g.DrawLine(arrowPen, midPt, arrowEnd2);
+                    }
+                }
+
+                string badgeText = _cutActionMode == TeddyCutActionMode.SplitIntoTwoMeshes
+                    ? $"TÁCH ĐÔI ({TeddyCutPatternGenerator.GetPatternDisplayName(_activeCutPattern)})"
+                    : $"XÓA PHÍA NÀY ({TeddyCutPatternGenerator.GetPatternDisplayName(_activeCutPattern)})";
+
+                Size textSize = TextRenderer.MeasureText(badgeText, UITheme.FontSmallBold);
+                Rectangle badgeRect = new Rectangle(
+                    (int)(arrowEnd.X - textSize.Width * 0.5f - 6),
+                    (int)(arrowEnd.Y + (removeNormal.Y >= 0 ? 4 : -24)),
+                    textSize.Width + 12,
+                    20);
+
+                using (GraphicsPath bp = UITheme.CreateRoundedRect(badgeRect, 5))
+                using (SolidBrush bb = new SolidBrush(Color.FromArgb(235, 255, 255, 255)))
+                using (Pen bBorder = new Pen(mainCutColor, 1.2f))
+                {
+                    g.FillPath(bb, bp);
+                    g.DrawPath(bBorder, bp);
+                }
+
+                TextRenderer.DrawText(g, badgeText, UITheme.FontSmallBold, badgeRect, mainCutColor,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+
+            g.SmoothingMode = old;
         }
 
         private static void DrawEmptyCanvasHint(Graphics g, Size vp)
@@ -1005,6 +1376,8 @@ namespace PaintLike.Teddy
             }
             else
             {
+                _isCutToolActive = false;
+                UpdateCutPatternToolbarState();
                 _currentMesh.ActiveBaseRing = null;
                 _gestureMode = TeddyGestureMode.Bending;
                 UITheme.SetButtonSelected(_btnBendMode, true);
@@ -1025,6 +1398,8 @@ namespace PaintLike.Teddy
             _camera.Reset();
             _bendReferenceStroke.Clear();
             _isBaseRingFromCut = false;
+            _isCutToolActive = false;
+            UpdateCutPatternToolbarState();
             _gestureMode = TeddyGestureMode.Creation;
             UITheme.SetButtonSelected(_btnBendMode, false);
             UpdateGestureModeState("Chế độ CREATION: Giữ Shift + Chuột Trái để vẽ đường viền tạo khối 3D mới, hoặc chọn các khối mẫu ở trên.");
@@ -1074,24 +1449,32 @@ namespace PaintLike.Teddy
             if (_currentMesh.IsEmpty)
                 _gestureMode = TeddyGestureMode.Creation;
 
-            switch (_gestureMode)
+            if (_isCutToolActive)
             {
-                case TeddyGestureMode.Creation:
-                    _lblModeBadge.Text = "MODE: CREATION";
-                    _lblModeBadge.BackColor = UITheme.AccentPrimary;
-                    break;
-                case TeddyGestureMode.Painting:
-                    _lblModeBadge.Text = "MODE: PAINTING";
-                    _lblModeBadge.BackColor = UITheme.AccentSecondary;
-                    break;
-                case TeddyGestureMode.Extrusion:
-                    _lblModeBadge.Text = "MODE: EXTRUSION";
-                    _lblModeBadge.BackColor = UITheme.AccentDanger;
-                    break;
-                case TeddyGestureMode.Bending:
-                    _lblModeBadge.Text = "MODE: BENDING";
-                    _lblModeBadge.BackColor = UITheme.AccentWarning;
-                    break;
+                _lblModeBadge.Text = $"CẮT: {_activeCutPattern.ToString().ToUpper()}";
+                _lblModeBadge.BackColor = UITheme.AccentDanger;
+            }
+            else
+            {
+                switch (_gestureMode)
+                {
+                    case TeddyGestureMode.Creation:
+                        _lblModeBadge.Text = "MODE: CREATION";
+                        _lblModeBadge.BackColor = UITheme.AccentPrimary;
+                        break;
+                    case TeddyGestureMode.Painting:
+                        _lblModeBadge.Text = "MODE: PAINTING";
+                        _lblModeBadge.BackColor = UITheme.AccentSecondary;
+                        break;
+                    case TeddyGestureMode.Extrusion:
+                        _lblModeBadge.Text = "MODE: EXTRUSION";
+                        _lblModeBadge.BackColor = UITheme.AccentDanger;
+                        break;
+                    case TeddyGestureMode.Bending:
+                        _lblModeBadge.Text = "MODE: BENDING";
+                        _lblModeBadge.BackColor = UITheme.AccentWarning;
+                        break;
+                }
             }
 
             if (_gestureMode == TeddyGestureMode.Creation || _currentMesh.IsEmpty)
@@ -1223,6 +1606,14 @@ namespace PaintLike.Teddy
             }
             if (keyData == Keys.Escape)
             {
+                if (_isCutToolActive)
+                {
+                    _isCutToolActive = false;
+                    UpdateCutPatternToolbarState();
+                    UpdateGestureModeState("Đã thoát công cụ kéo cắt trực tiếp.");
+                    _viewportPanel.Invalidate();
+                    return true;
+                }
                 if (_selectedSurfaceLine != null || _selectedMesh != null)
                 {
                     ClearSelection();
@@ -1374,6 +1765,7 @@ namespace PaintLike.Teddy
             foreach (var mesh in _sceneMeshes)
             {
                 if (mesh == null || mesh.IsEmpty) continue;
+                if (mesh.IsCutOffPiece && _cutPieceVisibility == TeddyCutPieceVisibility.Hidden) continue;
 
                 for (int i = 0; i < mesh.Triangles.Count; i++)
                 {
@@ -1743,7 +2135,10 @@ namespace PaintLike.Teddy
                 _viewportPanel.ClientSize.Height,
                 _sceneMeshes,
                 _camera,
-                _renderStyle);
+                _renderStyle,
+                _cutPieceVisibility,
+                _cutSurfaceViewMode,
+                _cutFillColor);
 
             _onInsertToLayer?.Invoke(snapshot, $"Teddy 3D ({_renderStyle} - {_sceneMeshes.Count} vật thể)");
             _hasSentCurrentMeshToLayer = true;
@@ -1778,7 +2173,10 @@ namespace PaintLike.Teddy
                         _viewportPanel.ClientSize.Height,
                         _sceneMeshes,
                         _camera,
-                        _renderStyle);
+                        _renderStyle,
+                        _cutPieceVisibility,
+                        _cutSurfaceViewMode,
+                        _cutFillColor);
 
                     _onInsertToLayer?.Invoke(snapshot, $"Teddy 3D ({_renderStyle} - {_sceneMeshes.Count} vật thể)");
                     _hasSentCurrentMeshToLayer = true;

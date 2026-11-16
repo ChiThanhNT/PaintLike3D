@@ -29,25 +29,27 @@ namespace PaintLike.Teddy
         public Vector3 FaceNormal;
         public TriangleCategory Category;
         public Color? CustomColor = null;
+        public bool IsCutCap = false;
 
         /// <summary>
         /// Chỉ số 3 tam giác kề qua cạnh (V0-V1), (V1-V2), (V2-V0). Giá trị -1 nếu là cạnh biên hở.
         /// </summary>
         public int[] Neighbors = new int[] { -1, -1, -1 };
 
-        public TeddyTriangle(int v0, int v1, int v2, TriangleCategory category = TriangleCategory.Junction, Color? customColor = null)
+        public TeddyTriangle(int v0, int v1, int v2, TriangleCategory category = TriangleCategory.Junction, Color? customColor = null, bool isCutCap = false)
         {
             V0 = v0;
             V1 = v1;
             V2 = v2;
             Category = category;
             CustomColor = customColor;
+            IsCutCap = isCutCap;
             FaceNormal = Vector3.UnitZ;
         }
 
         public TeddyTriangle Clone()
         {
-            var copy = new TeddyTriangle(V0, V1, V2, Category, CustomColor)
+            var copy = new TeddyTriangle(V0, V1, V2, Category, CustomColor, IsCutCap)
             {
                 FaceNormal = this.FaceNormal
             };
@@ -126,6 +128,12 @@ namespace PaintLike.Teddy
         // Vòng chọn màu đỏ khi vào chế độ Extrusion Mode (Mục 4.4 & 5.3)
         public TeddySurfaceLine? ActiveBaseRing { get; set; } = null;
 
+        // Các đường viền đánh dấu vị trí thiết diện vết cắt 3D (dùng để hiển thị/ẩn vị trí bị cắt)
+        public List<TeddySurfaceLine> CutSectionRings { get; private set; } = new List<TeddySurfaceLine>();
+
+        // Đánh dấu đây là phần mảnh bị cắt rời ra từ một vật thể 3D (có thể Hiện / Làm mờ Ghost / Ẩn để nhìn vào mặt cắt)
+        public bool IsCutOffPiece { get; set; } = false;
+
         // Dữ liệu trực quan hóa từng bước thuật toán Mục 5.1 (Hình 13, 14, 15)
         public TeddyAlgorithmDebugInfo? DebugInfo { get; set; } = null;
 
@@ -143,7 +151,9 @@ namespace PaintLike.Teddy
             SpineVertices.Clear();
             SpineEdges.Clear();
             SurfaceLines.Clear();
+            CutSectionRings.Clear();
             ActiveBaseRing = null;
+            IsCutOffPiece = false;
             DebugInfo = null;
         }
 
@@ -151,7 +161,8 @@ namespace PaintLike.Teddy
         {
             TeddyMesh copy = new TeddyMesh
             {
-                BaseColor = this.BaseColor
+                BaseColor = this.BaseColor,
+                IsCutOffPiece = this.IsCutOffPiece
             };
             copy.Vertices.AddRange(this.Vertices);
             copy.VertexNormals.AddRange(this.VertexNormals);
@@ -162,6 +173,8 @@ namespace PaintLike.Teddy
             copy.SpineEdges.AddRange(this.SpineEdges);
             foreach (var sl in this.SurfaceLines)
                 copy.SurfaceLines.Add(sl.Clone());
+            foreach (var cr in this.CutSectionRings)
+                copy.CutSectionRings.Add(cr.Clone());
             if (this.ActiveBaseRing != null)
                 copy.ActiveBaseRing = this.ActiveBaseRing.Clone();
             if (this.DebugInfo != null)

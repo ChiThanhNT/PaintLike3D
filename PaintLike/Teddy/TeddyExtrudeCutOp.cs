@@ -6,6 +6,363 @@ using System.Numerics;
 namespace PaintLike.Teddy
 {
     /// <summary>
+    /// Các mẫu đường cắt ngang vật thể 3D (Thẳng, Zíc-zắc, Cong, Lượn sóng, Bậc thang, Chữ V, Cắt tự do).
+    /// </summary>
+    public enum TeddyCutPattern
+    {
+        Freehand,   // Cắt tự do theo nét vẽ tay
+        Straight,   // Đường cắt thẳng phẳng
+        Zigzag,     // Đường cắt răng cưa Zíc-zắc
+        Curved,     // Đường cắt cong vòm (Cung tròn / Parabol)
+        Wave,       // Đường cắt lượn sóng hình Sin
+        Stepped,    // Đường cắt gấp khúc bậc thang vuông
+        ChevronV    // Đường cắt mũi nhọn chữ V
+    }
+
+    /// <summary>
+    /// Chế độ xử lý vật thể sau khi cắt:
+    /// - RemoveOneSide: Xóa bỏ 1 phía của đường cắt, bịt kín thiết diện và tạo viền đỏ để có thể đùn tiếp (chuẩn bài báo Teddy).
+    /// - SplitIntoTwoMeshes: Tách đôi vật thể thành 2 khối 3D độc lập khớp nhau theo đúng biên dạng đường cắt.
+    /// </summary>
+    public enum TeddyCutActionMode
+    {
+        RemoveOneSide,
+        SplitIntoTwoMeshes
+    }
+
+    /// <summary>
+    /// Bộ sinh mẫu đường cắt 2D (Thẳng, Zíc-zắc, Cong, Lượn sóng, Bậc thang, Chữ V, Cắt tự do)
+    /// dùng cho cả hiển thị Live Preview trên màn hình và giải thuật cắt mặt lưới 3D.
+    /// </summary>
+    public static class TeddyCutPatternGenerator
+    {
+        public static string GetPatternDisplayName(TeddyCutPattern pattern)
+        {
+            return pattern switch
+            {
+                TeddyCutPattern.Freehand => "Cắt Tự Do",
+                TeddyCutPattern.Straight => "Đường Thẳng",
+                TeddyCutPattern.Zigzag => "Zíc-zắc (Răng Cưa)",
+                TeddyCutPattern.Curved => "Đường Cong (Cung Vòm)",
+                TeddyCutPattern.Wave => "Lượn Sóng (Hình Sin)",
+                TeddyCutPattern.Stepped => "Bậc Thang Vuông",
+                TeddyCutPattern.ChevronV => "Gấp Khúc Chữ V",
+                _ => "Cắt Tự Do"
+            };
+        }
+
+        /// <summary>
+        /// Biến đổi nét kéo chuột thô (rawStroke) thành đa tuyến mẫu đường cắt (Patterned Cut Polyline).
+        /// </summary>
+        public static List<PointF> BuildPatternedCutPolyline(
+            IReadOnlyList<PointF> rawStroke,
+            TeddyCutPattern pattern,
+            float amplitudePx,
+            int periodCount,
+            bool flipRemoveSide,
+            out PointF startAnchor,
+            out PointF endAnchor,
+            out Vector2 removeSideNormal)
+        {
+            startAnchor = PointF.Empty;
+            endAnchor = PointF.Empty;
+            removeSideNormal = new Vector2(0, -1);
+
+            var result = new List<PointF>();
+            if (rawStroke == null || rawStroke.Count == 0)
+                return result;
+
+            startAnchor = rawStroke[0];
+            endAnchor = rawStroke[rawStroke.Count - 1];
+
+            if (rawStroke.Count < 2)
+            {
+                result.Add(startAnchor);
+                return result;
+            }
+
+            amplitudePx = Math.Clamp(amplitudePx, 4f, 90f);
+            periodCount = Math.Clamp(periodCount, 1, 20);
+
+            if (pattern == TeddyCutPattern.Freehand)
+            {
+                // Làm mượt nhẹ nét vẽ tay và lấy mẫu đều
+                var smoothed = SmoothFreehandStroke(rawStroke);
+                result = StrokeProcessor.ResampleUniform(smoothed, 5.5f, false);
+                if (result.Count < 2)
+                {
+                    result.Clear();
+                    result.Add(startAnchor);
+                    result.Add(endAnchor);
+                }
+            }
+            else
+            {
+                float dx = endAnchor.X - startAnchor.X;
+                float dy = endAnchor.Y - startAnchor.Y;
+                float chordLen = MathF.Sqrt(dx * dx + dy * dy);
+                if (chordLen < 4f)
+                {
+                    result.Add(startAnchor);
+                    result.Add(endAnchor);
+                    return result;
+                }
+
+                Vector2 dir = new Vector2(dx / chordLen, dy / chordLen);
+                // Vector pháp tuyến hướng về phía bên TRÁI của tia start -> end (trong hệ tọa độ màn hình Y hướng xuống)
+                Vector2 leftNorm = new Vector2(dir.Y, -dir.X);
+
+                switch (pattern)
+                {
+                    case TeddyCutPattern.Straight:
+                    {
+                        int steps = Math.Max(16, (int)(chordLen / 5f));
+                        for (int i = 0; i <= steps; i++)
+                        {
+                            float u = i / (float)steps;
+                            result.Add(new PointF(startAnchor.X + dx * u, startAnchor.Y + dy * u));
+                        }
+                        break;
+                    }
+
+                    case TeddyCutPattern.Zigzag:
+                    {
+                        // Tạo chuỗi đỉnh răng cưa nhọn rồi nội suy dày trên từng cạnh răng
+                        int teeth = Math.Max(2, periodCount);
+                        int totalHalfSegs = teeth * 2;
+                        var keyPts = new List<PointF>(totalHalfSegs + 3);
+                        float marginU = 0.06f;
+                        keyPts.Add(startAnchor);
+                        keyPts.Add(new PointF(startAnchor.X + dx * marginU, startAnchor.Y + dy * marginU));
+
+                        float spanU = 1f - 2f * marginU;
+                        for (int k = 0; k < totalHalfSegs; k++)
+                        {
+                            float u = marginU + ((k + 0.5f) / totalHalfSegs) * spanU;
+                            float sign = (k % 2 == 0) ? 1f : -1f;
+                            float bx = startAnchor.X + dx * u + leftNorm.X * (sign * amplitudePx);
+                            float by = startAnchor.Y + dy * u + leftNorm.Y * (sign * amplitudePx);
+                            keyPts.Add(new PointF(bx, by));
+                        }
+
+                        keyPts.Add(new PointF(startAnchor.X + dx * (1f - marginU), startAnchor.Y + dy * (1f - marginU)));
+                        keyPts.Add(endAnchor);
+                        result = SubdivideSharpPolyline(keyPts, 4.5f);
+                        break;
+                    }
+
+                    case TeddyCutPattern.Curved:
+                    {
+                        int steps = Math.Max(32, (int)(chordLen / 4.5f));
+                        float archHeight = amplitudePx * 1.45f;
+                        for (int i = 0; i <= steps; i++)
+                        {
+                            float u = i / (float)steps;
+                            // Cung vòm Parabol mượt: đạt đỉnh tại u = 0.5
+                            float offset = 4f * archHeight * u * (1f - u);
+                            float px = startAnchor.X + dx * u + leftNorm.X * offset;
+                            float py = startAnchor.Y + dy * u + leftNorm.Y * offset;
+                            result.Add(new PointF(px, py));
+                        }
+                        break;
+                    }
+
+                    case TeddyCutPattern.Wave:
+                    {
+                        int steps = Math.Max(48, (int)(chordLen / 3.8f));
+                        int halfWaves = Math.Max(2, periodCount * 2);
+                        float marginU = 0.05f;
+                        float spanU = 1f - 2f * marginU;
+
+                        for (int i = 0; i <= steps; i++)
+                        {
+                            float u = i / (float)steps;
+                            float offset = 0f;
+                            if (u >= marginU && u <= 1f - marginU)
+                            {
+                                float localU = (u - marginU) / spanU;
+                                // Envelope làm mượt nhẹ 2 đầu để sóng nối êm vào 2 mút
+                                float env = MathF.Sin(MathF.PI * Math.Clamp(localU, 0f, 1f));
+                                env = MathF.Pow(env, 0.35f);
+                                offset = amplitudePx * env * MathF.Sin(localU * halfWaves * MathF.PI);
+                            }
+                            float px = startAnchor.X + dx * u + leftNorm.X * offset;
+                            float py = startAnchor.Y + dy * u + leftNorm.Y * offset;
+                            result.Add(new PointF(px, py));
+                        }
+                        break;
+                    }
+
+                    case TeddyCutPattern.Stepped:
+                    {
+                        int stepsCount = Math.Max(2, periodCount * 2 - 1);
+                        float marginU = 0.07f;
+                        float spanU = 1f - 2f * marginU;
+                        float stepW = spanU / stepsCount;
+                        float slopeU = Math.Min(stepW * 0.14f, 0.015f);
+                        float stepAmp = amplitudePx * 0.85f;
+
+                        var keyPts = new List<PointF>();
+                        keyPts.Add(startAnchor);
+                        keyPts.Add(new PointF(startAnchor.X + dx * marginU, startAnchor.Y + dy * marginU));
+
+                        for (int k = 0; k < stepsCount; k++)
+                        {
+                            float u0 = marginU + k * stepW;
+                            float u1 = u0 + stepW;
+                            float sign = (k % 2 == 0) ? 1f : -1f;
+                            float off = sign * stepAmp;
+
+                            float ua = u0 + slopeU * 0.5f;
+                            float ub = u1 - slopeU * 0.5f;
+
+                            keyPts.Add(new PointF(
+                                startAnchor.X + dx * ua + leftNorm.X * off,
+                                startAnchor.Y + dy * ua + leftNorm.Y * off));
+                            keyPts.Add(new PointF(
+                                startAnchor.X + dx * ub + leftNorm.X * off,
+                                startAnchor.Y + dy * ub + leftNorm.Y * off));
+                        }
+
+                        keyPts.Add(new PointF(startAnchor.X + dx * (1f - marginU), startAnchor.Y + dy * (1f - marginU)));
+                        keyPts.Add(endAnchor);
+                        result = SubdivideSharpPolyline(keyPts, 4.5f);
+                        break;
+                    }
+
+                    case TeddyCutPattern.ChevronV:
+                    {
+                        float vDepth = amplitudePx * 1.65f;
+                        var keyPts = new List<PointF>
+                        {
+                            startAnchor,
+                            new PointF(startAnchor.X + dx * 0.18f, startAnchor.Y + dy * 0.18f),
+                            new PointF(startAnchor.X + dx * 0.50f - leftNorm.X * vDepth, startAnchor.Y + dy * 0.50f - leftNorm.Y * vDepth),
+                            new PointF(startAnchor.X + dx * 0.82f, startAnchor.Y + dy * 0.82f),
+                            endAnchor
+                        };
+                        result = SubdivideSharpPolyline(keyPts, 4.5f);
+                        break;
+                    }
+                }
+            }
+
+            // Tính pháp tuyến phía bị xóa (bên trái của hướng polyline hiện tại)
+            if (result.Count >= 2)
+            {
+                PointF pA = result[0];
+                PointF pB = result[result.Count - 1];
+                float vx = pB.X - pA.X;
+                float vy = pB.Y - pA.Y;
+                float vLen = MathF.Sqrt(vx * vx + vy * vy);
+                if (vLen > 1e-3f)
+                {
+                    vx /= vLen;
+                    vy /= vLen;
+                    // Trong hệ trục màn hình (X phải, Y xuống): bên trái vector (vx, vy) là (vy, -vx)
+                    removeSideNormal = new Vector2(vy, -vx);
+                }
+            }
+
+            // Nếu người dùng bật "Đảo bên cắt": Đảo ngược thứ tự polyline để giữ nguyên hình dáng đường cắt trên màn hình
+            // nhưng đổi phía bị cắt bỏ từ Trái sang Phải!
+            if (flipRemoveSide && result.Count >= 2)
+            {
+                result.Reverse();
+                removeSideNormal = -removeSideNormal;
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Tạo tự động một nét kéo ngang qua chính giữa tâm bao 2D của mô hình 3D hiện tại
+        /// để người dùng có thể bấm nút "Cắt Ngang Ngay" và trải nghiệm ngay mẫu đường cắt.
+        /// </summary>
+        public static List<PointF> CreateQuickHorizontalCutStroke(
+            TeddyMesh mesh,
+            VirtualTrackballCamera camera,
+            Size viewport)
+        {
+            float minX = float.MaxValue, minY = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue;
+
+            if (mesh != null && !mesh.IsEmpty)
+            {
+                foreach (var v in mesh.Vertices)
+                {
+                    Vector3 sp = camera.ProjectToScreen(v, viewport);
+                    if (sp.X < minX) minX = sp.X;
+                    if (sp.Y < minY) minY = sp.Y;
+                    if (sp.X > maxX) maxX = sp.X;
+                    if (sp.Y > maxY) maxY = sp.Y;
+                }
+            }
+            else
+            {
+                minX = viewport.Width * 0.3f;
+                maxX = viewport.Width * 0.7f;
+                minY = viewport.Height * 0.3f;
+                maxY = viewport.Height * 0.7f;
+            }
+
+            float cy = (minY + maxY) * 0.5f;
+            float padX = Math.Max(48f, (maxX - minX) * 0.22f);
+            PointF pStart = new PointF(minX - padX, cy);
+            PointF pEnd = new PointF(maxX + padX, cy);
+
+            var raw = new List<PointF>(25);
+            for (int i = 0; i <= 24; i++)
+            {
+                float t = i / 24f;
+                raw.Add(new PointF(pStart.X + (pEnd.X - pStart.X) * t, cy));
+            }
+            return raw;
+        }
+
+        public static List<PointF> SubdivideSharpPolyline(IReadOnlyList<PointF> keyPts, float maxSegLen = 4.5f)
+        {
+            var res = new List<PointF>();
+            if (keyPts == null || keyPts.Count == 0) return res;
+            res.Add(keyPts[0]);
+
+            for (int i = 0; i < keyPts.Count - 1; i++)
+            {
+                PointF a = keyPts[i];
+                PointF b = keyPts[i + 1];
+                float len = StrokeProcessor.Distance(a, b);
+                int sub = Math.Max(1, (int)MathF.Ceiling(len / maxSegLen));
+                for (int s = 1; s <= sub; s++)
+                {
+                    float t = s / (float)sub;
+                    res.Add(new PointF(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t));
+                }
+            }
+            return res;
+        }
+
+        private static List<PointF> SmoothFreehandStroke(IReadOnlyList<PointF> raw)
+        {
+            if (raw.Count <= 4) return new List<PointF>(raw);
+            var curr = new List<PointF>(raw);
+            for (int iter = 0; iter < 2; iter++)
+            {
+                var next = new List<PointF>(curr.Count);
+                next.Add(curr[0]);
+                for (int i = 1; i < curr.Count - 1; i++)
+                {
+                    float x = 0.25f * curr[i - 1].X + 0.5f * curr[i].X + 0.25f * curr[i + 1].X;
+                    float y = 0.25f * curr[i - 1].Y + 0.5f * curr[i].Y + 0.25f * curr[i + 1].Y;
+                    next.Add(new PointF(x, y));
+                }
+                next.Add(curr[curr.Count - 1]);
+                curr = next;
+            }
+            return curr;
+        }
+    }
+
+    /// <summary>
     /// [TV2-03 & TV2-04] Thực hiện các phép Đùn khối (Extrusion - Mục 4.4 & 5.3),
     /// Khoét lõm (Digging a Cavity - Hình 7a-c), Cắt khối (Cutting - Mục 4.5 & 5.4)
     /// và Đùn tiếp từ mặt cắt (Extrusion after Cutting - Hình 9).
@@ -349,8 +706,54 @@ namespace PaintLike.Teddy
         }
 
         /// <summary>
-        /// [Mục 4.5 & 5.4 - Hình 8, 9, 20] Thực hiện phép Cắt khối (Cutting):
-        /// Chia đôi vật thể theo mặt phẳng tạo bởi vị trí Camera và nét cắt, xóa bỏ phần bên trái nét cắt,
+        /// Thực hiện phép Cắt ngang vật thể 3D hoặc Tách đôi vật thể thành 2 khối theo mẫu đường cắt (Thẳng, Zíc-zắc, Cong, Lượn sóng, Bậc thang, Chữ V, Cắt tự do).
+        /// </summary>
+        public static bool TryCutOrSplitMeshWithPattern(
+            TeddyMesh mesh,
+            IReadOnlyList<PointF> rawCutStroke,
+            TeddyCutPattern pattern,
+            float amplitudePx,
+            int periodCount,
+            bool flipRemoveSide,
+            TeddyCutActionMode actionMode,
+            VirtualTrackballCamera camera,
+            Size viewport,
+            out TeddyMesh? secondSplitMesh,
+            out string statusMessage)
+        {
+            secondSplitMesh = null;
+            statusMessage = "";
+            if (mesh == null || mesh.IsEmpty || rawCutStroke == null || rawCutStroke.Count < 2)
+            {
+                statusMessage = "Nét cắt không hợp lệ.";
+                return false;
+            }
+
+            List<PointF> patternedPoly = TeddyCutPatternGenerator.BuildPatternedCutPolyline(
+                rawCutStroke, pattern, amplitudePx, periodCount, flipRemoveSide,
+                out _, out _, out Vector2 removeSideNormal);
+
+            if (patternedPoly.Count < 2)
+            {
+                statusMessage = "Đường cắt quá ngắn.";
+                return false;
+            }
+
+            string patternName = TeddyCutPatternGenerator.GetPatternDisplayName(pattern);
+
+            if (!SliceSingleMeshByDirectedPolyline(mesh, patternedPoly, camera, viewport, markRedRing: true, out _))
+            {
+                statusMessage = $"Đường cắt [{patternName}] chưa đi xuyên qua vật thể. Hãy kéo đường cắt cắt ngang qua khối 3D!";
+                return false;
+            }
+
+            statusMessage = $"Đã cắt bỏ phần thừa và tô màu vị trí bị cắt theo mẫu [{patternName}]! Bạn có thể bấm nút 'Vị trí cắt: Hiện / Ẩn' để quan sát vết cắt.";
+            return true;
+        }
+
+        /// <summary>
+        /// [Mục 4.5 & 5.4 - Hình 8, 9, 20] Thực hiện phép Cắt khối (Cutting) từ chuỗi điểm 2D:
+        /// Chia đôi vật thể theo mặt kẻ (Ruled Surface) tạo bởi vị trí Camera và đường cắt, xóa bỏ phần bên trái nét cắt,
         /// bịt kín thiết diện mặt cắt và tô đỏ viền cắt để có thể đùn tiếp (Extrusion after Cutting).
         /// </summary>
         public static bool TryCutMeshWithStroke(
@@ -361,22 +764,55 @@ namespace PaintLike.Teddy
             out string statusMessage)
         {
             statusMessage = "";
-            if (mesh == null || mesh.IsEmpty || rawCutStroke == null || rawCutStroke.Count < 3)
+            if (mesh == null || mesh.IsEmpty || rawCutStroke == null || rawCutStroke.Count < 2)
             {
                 statusMessage = "Nét cắt không hợp lệ.";
                 return false;
             }
 
-            // Lấy mẫu mượt nét cắt trên màn hình
-            List<PointF> cutPolyScreen = StrokeProcessor.ResampleUniform(rawCutStroke, 10f, false);
+            List<PointF> cutPolyScreen = TeddyCutPatternGenerator.SubdivideSharpPolyline(rawCutStroke, 5.0f);
             if (cutPolyScreen.Count < 3)
             {
                 statusMessage = "Nét cắt quá ngắn.";
                 return false;
             }
 
-            // Tính khoảng cách có dấu (Signed Distance) của từng đỉnh 3D chiếu lên màn hình so với đường nét cắt có hướng
-            // Theo Mục 4.5: "What is on the screen to the left of the stroke is then removed entirely (Figure 3p)"
+            if (!SliceSingleMeshByDirectedPolyline(mesh, cutPolyScreen, camera, viewport, markRedRing: true, out statusMessage))
+            {
+                return false;
+            }
+
+            statusMessage = "Đã cắt mô hình (Cutting - Hình 8 & 20)! Viền mặt cắt đã chuyển sang màu đỏ: Vẽ nét tiếp để Đùn từ vết cắt (Hình 9) hoặc Click đơn để hoàn tất.";
+            return true;
+        }
+
+        private static bool SliceSingleMeshByDirectedPolyline(
+            TeddyMesh mesh,
+            List<PointF> cutPolyScreen,
+            VirtualTrackballCamera camera,
+            Size viewport,
+            bool markRedRing,
+            out string statusMessage)
+        {
+            statusMessage = "";
+            if (mesh == null || mesh.IsEmpty || cutPolyScreen == null || cutPolyScreen.Count < 2)
+            {
+                statusMessage = "Nét cắt không hợp lệ.";
+                return false;
+            }
+
+            // Bước 1: Mở rộng hai đầu đường cắt ra xa ngoài vùng nhìn dọc theo hướng tổng thể
+            // và dựng đa giác nửa mặt phẳng bên Phải (Right Half-Plane Jordan Polygon) để xét dấu chính xác 100% ở mọi góc nhọn Zíc-zắc / Bậc thang
+            BuildExtendedPolylineAndRightHalfPolygon(
+                cutPolyScreen,
+                out List<PointF> extendedPoly,
+                out List<Vector2> rightHalfPolygon);
+
+            // Bước 2: Chia mịn cục bộ (Adaptive Manifold Midpoint Subdivision) các tam giác nằm gần đường cắt
+            // giúp mặt cắt bám sát từng răng cưa Zíc-zắc, Bậc thang, Lượn sóng và Đường cong trên cả Khối Hộp / Khối Cầu thô
+            SubdivideMeshAlongCutBand(mesh, cutPolyScreen, extendedPoly, camera, viewport);
+
+            // Bước 3: Tính khoảng cách có dấu (Signed Distance) của từng đỉnh 3D chiếu lên màn hình
             int origVertCount = mesh.Vertices.Count;
             float[] signedDist = new float[origVertCount];
             int leftCount = 0;
@@ -385,7 +821,9 @@ namespace PaintLike.Teddy
             for (int i = 0; i < origVertCount; i++)
             {
                 Vector3 sp = camera.ProjectToScreen(mesh.Vertices[i], viewport);
-                float d = ComputeSignedDistanceToDirectedPolyline(new PointF(sp.X, sp.Y), cutPolyScreen);
+                float d = ComputeSignedDistanceToExtendedPolyline(new PointF(sp.X, sp.Y), extendedPoly, rightHalfPolygon);
+                // Khử suy biến khi đỉnh nằm đúng trên đường cắt (Simulation of Simplicity)
+                if (MathF.Abs(d) < 1e-3f) d = 1e-3f;
                 signedDist[i] = d;
                 if (d < 0f) leftCount++;
                 else rightCount++;
@@ -410,7 +848,7 @@ namespace PaintLike.Teddy
                 float dA = signedDist[vA];
                 float dB = signedDist[vB];
                 float denom = dA - dB;
-                float t = MathF.Abs(denom) > 1e-6f ? Math.Clamp(dA / denom, 0f, 1f) : 0.5f;
+                float t = MathF.Abs(denom) > 1e-6f ? Math.Clamp(dA / denom, 0.002f, 0.998f) : 0.5f;
 
                 Vector3 pos = Vector3.Lerp(mesh.Vertices[vA], mesh.Vertices[vB], t);
                 cutIdx = mesh.Vertices.Count;
@@ -439,12 +877,10 @@ namespace PaintLike.Teddy
                 }
                 else if (keptCount == 0)
                 {
-                    // Nằm hoàn toàn bên trái nét cắt -> Xóa bỏ
                     continue;
                 }
                 else if (keptCount == 1)
                 {
-                    // 1 đỉnh được giữ (A), 2 đỉnh bị cắt bỏ (B, C) theo đúng thứ tự CCW
                     int a, b, c;
                     if (k0) { a = i0; b = i1; c = i2; }
                     else if (k1) { a = i1; b = i2; c = i0; }
@@ -453,12 +889,11 @@ namespace PaintLike.Teddy
                     int ab = GetOrCreateCutVertex(a, b);
                     int ac = GetOrCreateCutVertex(a, c);
 
-                    keptTriangles.Add(new TeddyTriangle(a, ab, ac));
+                    keptTriangles.Add(new TeddyTriangle(a, ab, ac, tri.Category, tri.CustomColor, tri.IsCutCap));
                     cutBoundarySegments.Add((ab, ac));
                 }
                 else if (keptCount == 2)
                 {
-                    // 2 đỉnh được giữ (B, C), 1 đỉnh bị cắt bỏ (A) theo thứ tự CCW (A, B, C)
                     int a, b, c;
                     if (!k0) { a = i0; b = i1; c = i2; }
                     else if (!k1) { a = i1; b = i2; c = i0; }
@@ -467,8 +902,8 @@ namespace PaintLike.Teddy
                     int ab = GetOrCreateCutVertex(a, b);
                     int ac = GetOrCreateCutVertex(a, c);
 
-                    keptTriangles.Add(new TeddyTriangle(ab, b, c));
-                    keptTriangles.Add(new TeddyTriangle(ab, c, ac));
+                    keptTriangles.Add(new TeddyTriangle(ab, b, c, tri.Category, tri.CustomColor, tri.IsCutCap));
+                    keptTriangles.Add(new TeddyTriangle(ab, c, ac, tri.Category, tri.CustomColor, tri.IsCutCap));
                     cutBoundarySegments.Add((ac, ab));
                 }
             }
@@ -479,85 +914,60 @@ namespace PaintLike.Teddy
                 return false;
             }
 
-            // Nối các đoạn biên tại vết cắt thành vòng thiết diện khép kín (Section Ring - Hình 20)
-            List<int> sectionLoop = AssembleOrderedLoop(mesh.Vertices, cutBoundarySegments);
+            // Bước 4: Nối các đoạn biên tại vết cắt thành các vòng thiết diện khép kín (Section Loops)
+            // Hỗ trợ cả trường hợp đường cắt đi qua nhiều nhánh / nhiều tai / nhiều răng sóng trên cùng 1 vật thể
+            List<List<int>> sectionLoops = AssembleAllOrderedLoops(mesh.Vertices, cutBoundarySegments);
+            List<Vector3>? largestLoopPoints = null;
 
-            // Bịt kín mặt cắt bằng Constrained Delaunay Triangulation (Mục 5.4: "triangulates each planar polygon [22]")
-            if (sectionLoop.Count >= 3)
+            foreach (var sectionLoop in sectionLoops)
             {
-                Vector3 capCenter = Vector3.Zero;
-                var sectionRingPoints = new List<Vector3>(sectionLoop.Count);
+                if (sectionLoop.Count < 3) continue;
+
+                // Bịt kín mặt cắt trên không gian tham số mặt kẻ (s, z) để bảo toàn tuyệt đối biên dạng Zíc-zắc / Cong / Lượn sóng / Bậc thang
+                CapSectionLoopInRuledParameterSpace(mesh, sectionLoop, extendedPoly, camera, viewport, keptTriangles);
+
+                var loopPts = new List<Vector3>(sectionLoop.Count);
                 foreach (int vIdx in sectionLoop)
-                {
-                    capCenter += mesh.Vertices[vIdx];
-                    sectionRingPoints.Add(mesh.Vertices[vIdx]);
-                }
-                capCenter /= sectionLoop.Count;
+                    loopPts.Add(mesh.Vertices[vIdx]);
 
-                Vector3 secNormal = TeddyRaycaster.ComputeRingNormal(sectionRingPoints);
-                Vector3 uSec = Vector3.Normalize(sectionRingPoints[0] - capCenter - Vector3.Dot(sectionRingPoints[0] - capCenter, secNormal) * secNormal);
-                if (uSec.LengthSquared() < 1e-4f) uSec = Vector3.UnitX;
-                Vector3 vSec = Vector3.Normalize(Vector3.Cross(secNormal, uSec));
-
-                var poly2D = new List<Vector2>(sectionLoop.Count);
-                for (int i = 0; i < sectionLoop.Count; i++)
+                mesh.CutSectionRings.Add(new TeddySurfaceLine
                 {
-                    Vector3 rel = sectionRingPoints[i] - capCenter;
-                    poly2D.Add(new Vector2(Vector3.Dot(rel, uSec), Vector3.Dot(rel, vSec)));
-                }
+                    Points = loopPts,
+                    StrokeColor = Color.FromArgb(225, 29, 72),
+                    StrokeWidth = 3.2f,
+                    IsClosedRing = true
+                });
 
-                // Lưu bản sao chỉ số đỉnh theo hướng của poly2D (vì TriangulatePolygonCDT có thể đảo chiều nếu ngược CCW)
-                var orderedLoopIndices = new List<int>(sectionLoop);
-                if (Delaunay2D.ComputeSignedArea(poly2D) < 0f)
+                if (largestLoopPoints == null || loopPts.Count > largestLoopPoints.Count)
                 {
-                    orderedLoopIndices.Reverse();
+                    largestLoopPoints = loopPts;
                 }
+            }
 
-                List<Tri2D> capCdt = Delaunay2D.TriangulatePolygonCDT(poly2D);
-                if (capCdt.Count > 0)
-                {
-                    foreach (var ct in capCdt)
-                    {
-                        if (ct.V0 < orderedLoopIndices.Count && ct.V1 < orderedLoopIndices.Count && ct.V2 < orderedLoopIndices.Count)
-                        {
-                            keptTriangles.Add(new TeddyTriangle(
-                                orderedLoopIndices[ct.V0],
-                                orderedLoopIndices[ct.V1],
-                                orderedLoopIndices[ct.V2]));
-                        }
-                    }
-                }
-                else
-                {
-                    int capCenterIdx = mesh.Vertices.Count;
-                    mesh.Vertices.Add(capCenter);
-                    for (int i = 0; i < sectionLoop.Count; i++)
-                    {
-                        int vCurr = sectionLoop[i];
-                        int vNext = sectionLoop[(i + 1) % sectionLoop.Count];
-                        keptTriangles.Add(new TeddyTriangle(vCurr, vNext, capCenterIdx));
-                    }
-                }
+            // Cắt tỉa các nét vẽ trang trí trên bề mặt (SurfaceLines) thuộc phần đã bị cắt bỏ
+            ClipSurfaceLinesAfterCut(mesh, extendedPoly, rightHalfPolygon, camera, viewport);
 
-                // Tô đỏ viền mặt cắt (ActiveBaseRing) để chuyển sang Extrusion Mode (Mục 4.5 - Hình 3p, Hình 9)
+            if (markRedRing && largestLoopPoints != null && largestLoopPoints.Count >= 3)
+            {
                 mesh.ActiveBaseRing = new TeddySurfaceLine
                 {
-                    Points = sectionRingPoints,
+                    Points = largestLoopPoints,
                     StrokeColor = Color.FromArgb(239, 68, 68),
                     StrokeWidth = 3.8f,
                     IsClosedRing = true
                 };
             }
+            else
+            {
+                mesh.ActiveBaseRing = null;
+            }
 
             mesh.Triangles.Clear();
             mesh.Triangles.AddRange(keptTriangles);
 
-            // Dọn dẹp các đỉnh mồ côi (Compact unused vertices) để lưới gọn nhẹ
             CompactMeshVertices(mesh);
             mesh.BuildConnectivity();
             mesh.RecalculateNormals();
-
-            statusMessage = "Đã cắt mô hình (Cutting - Hình 8 & 20)! Viền mặt cắt đã chuyển sang màu đỏ: Vẽ nét tiếp để Đùn từ vết cắt (Hình 9) hoặc Click đơn để hoàn tất.";
             return true;
         }
 
@@ -876,85 +1286,564 @@ namespace PaintLike.Teddy
         }
 
         /// <summary>
-        /// Tính khoảng cách có dấu từ điểm p (màn hình) tới đường cắt có hướng (Cut Polyline).
-        /// Giá trị âm (< 0) là nằm bên trái hướng vẽ nét cắt (vùng bị cắt bỏ theo Mục 4.5).
+        /// Mở rộng hai đầu của đường cắt theo hướng tổng thể và dựng đa giác khép kín đại diện cho nửa mặt phẳng bên Phải (Right Half-Plane).
+        /// Giúp xét dấu khoảng cách (Trái < 0, Phải >= 0) chính xác tuyệt đối không bị lật dấu tại các đỉnh nhọn Zíc-zắc / Bậc thang.
         /// </summary>
-        private static float ComputeSignedDistanceToDirectedPolyline(PointF p, List<PointF> polyline)
+        private static void BuildExtendedPolylineAndRightHalfPolygon(
+            List<PointF> cutPolyScreen,
+            out List<PointF> extendedPoly,
+            out List<Vector2> rightHalfPolygon)
+        {
+            PointF p0 = cutPolyScreen[0];
+            PointF pN = cutPolyScreen[cutPolyScreen.Count - 1];
+
+            Vector2 chord = new Vector2(pN.X - p0.X, pN.Y - p0.Y);
+            if (chord.LengthSquared() < 1e-3f && cutPolyScreen.Count >= 2)
+            {
+                chord = new Vector2(cutPolyScreen[1].X - p0.X, cutPolyScreen[1].Y - p0.Y);
+            }
+            if (chord.LengthSquared() < 1e-5f)
+            {
+                chord = new Vector2(1f, 0f);
+            }
+            else
+            {
+                chord = Vector2.Normalize(chord);
+            }
+
+            // Pháp tuyến hướng sang phía bên PHẢI của vector chord trong tọa độ màn hình (X phải, Y xuống): (-chord.Y, chord.X)
+            Vector2 rightNormal = new Vector2(-chord.Y, chord.X);
+            const float EXTEND_LEN = 3200f;
+            const float SIDE_DEPTH = 4800f;
+
+            PointF extStart = new PointF(p0.X - chord.X * EXTEND_LEN, p0.Y - chord.Y * EXTEND_LEN);
+            PointF extEnd = new PointF(pN.X + chord.X * EXTEND_LEN, pN.Y + chord.Y * EXTEND_LEN);
+
+            extendedPoly = new List<PointF>(cutPolyScreen.Count + 2);
+            extendedPoly.Add(extStart);
+            extendedPoly.AddRange(cutPolyScreen);
+            extendedPoly.Add(extEnd);
+
+            rightHalfPolygon = new List<Vector2>(extendedPoly.Count + 2);
+            for (int i = 0; i < extendedPoly.Count; i++)
+            {
+                rightHalfPolygon.Add(new Vector2(extendedPoly[i].X, extendedPoly[i].Y));
+            }
+            rightHalfPolygon.Add(new Vector2(extEnd.X + rightNormal.X * SIDE_DEPTH, extEnd.Y + rightNormal.Y * SIDE_DEPTH));
+            rightHalfPolygon.Add(new Vector2(extStart.X + rightNormal.X * SIDE_DEPTH, extStart.Y + rightNormal.Y * SIDE_DEPTH));
+        }
+
+        /// <summary>
+        /// Chia mịn cục bộ bảo toàn tính liên thông (Manifold Red-Green Midpoint Subdivision) cho các mặt tam giác nằm gần đường cắt.
+        /// Giúp các mẫu đường cắt Zíc-zắc, Bậc thang, Lượn sóng, Chữ V, Đường cong có độ phân giải cạnh sắc nét trên mọi khối 3D.
+        /// </summary>
+        private static void SubdivideMeshAlongCutBand(
+            TeddyMesh mesh,
+            List<PointF> cutPolyScreen,
+            List<PointF> extendedPoly,
+            VirtualTrackballCamera camera,
+            Size viewport)
+        {
+            const int MAX_PASSES = 3;
+            const float BAND_DIST_PX = 34f;
+            const float MAX_EDGE_PX = 8.0f;
+
+            for (int pass = 0; pass < MAX_PASSES; pass++)
+            {
+                if (mesh.Triangles.Count > 16000) break;
+
+                int vCount = mesh.Vertices.Count;
+                PointF[] sp = new PointF[vCount];
+                float[] distToCut = new float[vCount];
+
+                for (int i = 0; i < vCount; i++)
+                {
+                    Vector3 s = camera.ProjectToScreen(mesh.Vertices[i], viewport);
+                    sp[i] = new PointF(s.X, s.Y);
+                    distToCut[i] = ComputeUnsignedDistanceToPolyline(sp[i], cutPolyScreen);
+                }
+
+                var edgeMidpointMap = new Dictionary<(int, int), int>();
+
+                int GetOrSplitEdge(int a, int b)
+                {
+                    var key = a < b ? (a, b) : (b, a);
+                    if (edgeMidpointMap.TryGetValue(key, out int midIdx))
+                        return midIdx;
+
+                    Vector3 midPos = 0.5f * (mesh.Vertices[a] + mesh.Vertices[b]);
+                    midIdx = mesh.Vertices.Count;
+                    mesh.Vertices.Add(midPos);
+                    edgeMidpointMap[key] = midIdx;
+                    return midIdx;
+                }
+
+                // Đánh dấu các cạnh cần chia đôi thuộc các tam giác nằm trong dải lân cận đường cắt
+                foreach (var tri in mesh.Triangles)
+                {
+                    int i0 = tri.V0, i1 = tri.V1, i2 = tri.V2;
+                    float minD = MathF.Min(distToCut[i0], MathF.Min(distToCut[i1], distToCut[i2]));
+                    PointF centroid2D = new PointF(
+                        (sp[i0].X + sp[i1].X + sp[i2].X) / 3f,
+                        (sp[i0].Y + sp[i1].Y + sp[i2].Y) / 3f);
+                    float centroidD = ComputeUnsignedDistanceToPolyline(centroid2D, extendedPoly);
+
+                    if (minD > BAND_DIST_PX && centroidD > BAND_DIST_PX)
+                        continue;
+
+                    if (StrokeProcessor.Distance(sp[i0], sp[i1]) > MAX_EDGE_PX)
+                        GetOrSplitEdge(i0, i1);
+                    if (StrokeProcessor.Distance(sp[i1], sp[i2]) > MAX_EDGE_PX)
+                        GetOrSplitEdge(i1, i2);
+                    if (StrokeProcessor.Distance(sp[i2], sp[i0]) > MAX_EDGE_PX)
+                        GetOrSplitEdge(i2, i0);
+                }
+
+                if (edgeMidpointMap.Count == 0)
+                    break;
+
+                var newTris = new List<TeddyTriangle>(mesh.Triangles.Count + edgeMidpointMap.Count * 2);
+
+                foreach (var tri in mesh.Triangles)
+                {
+                    int v0 = tri.V0, v1 = tri.V1, v2 = tri.V2;
+                    bool s01 = edgeMidpointMap.TryGetValue(v0 < v1 ? (v0, v1) : (v1, v0), out int m01);
+                    bool s12 = edgeMidpointMap.TryGetValue(v1 < v2 ? (v1, v2) : (v2, v1), out int m12);
+                    bool s20 = edgeMidpointMap.TryGetValue(v2 < v0 ? (v2, v0) : (v0, v2), out int m20);
+
+                    int splitCount = (s01 ? 1 : 0) + (s12 ? 1 : 0) + (s20 ? 1 : 0);
+
+                    if (splitCount == 0)
+                    {
+                        newTris.Add(tri);
+                    }
+                    else if (splitCount == 3)
+                    {
+                        newTris.Add(new TeddyTriangle(v0, m01, m20, tri.Category, tri.CustomColor, tri.IsCutCap));
+                        newTris.Add(new TeddyTriangle(m01, v1, m12, tri.Category, tri.CustomColor, tri.IsCutCap));
+                        newTris.Add(new TeddyTriangle(m20, m12, v2, tri.Category, tri.CustomColor, tri.IsCutCap));
+                        newTris.Add(new TeddyTriangle(m01, m12, m20, tri.Category, tri.CustomColor, tri.IsCutCap));
+                    }
+                    else if (splitCount == 1)
+                    {
+                        // Xoay đỉnh sao cho cạnh bị chia là (a, b) với trung điểm mAB, đỉnh đối diện là c
+                        int a, b, c, mAB;
+                        if (s01) { a = v0; b = v1; c = v2; mAB = m01; }
+                        else if (s12) { a = v1; b = v2; c = v0; mAB = m12; }
+                        else { a = v2; b = v0; c = v1; mAB = m20; }
+
+                        newTris.Add(new TeddyTriangle(a, mAB, c, tri.Category, tri.CustomColor, tri.IsCutCap));
+                        newTris.Add(new TeddyTriangle(mAB, b, c, tri.Category, tri.CustomColor, tri.IsCutCap));
+                    }
+                    else if (splitCount == 2)
+                    {
+                        // Xoay đỉnh sao cho 2 cạnh bị chia là (a, b) có mAB và (b, c) có mBC
+                        int a, b, c, mAB, mBC;
+                        if (!s20) { a = v0; b = v1; c = v2; mAB = m01; mBC = m12; }
+                        else if (!s01) { a = v1; b = v2; c = v0; mAB = m12; mBC = m20; }
+                        else { a = v2; b = v0; c = v1; mAB = m20; mBC = m01; }
+
+                        newTris.Add(new TeddyTriangle(mAB, b, mBC, tri.Category, tri.CustomColor, tri.IsCutCap));
+                        newTris.Add(new TeddyTriangle(a, mAB, mBC, tri.Category, tri.CustomColor, tri.IsCutCap));
+                        newTris.Add(new TeddyTriangle(a, mBC, c, tri.Category, tri.CustomColor, tri.IsCutCap));
+                    }
+                }
+
+                mesh.Triangles.Clear();
+                mesh.Triangles.AddRange(newTris);
+            }
+        }
+
+        private static float ComputeUnsignedDistanceToPolyline(PointF p, List<PointF> polyline)
         {
             int n = polyline.Count;
             float bestDistSq = float.MaxValue;
-            float bestSign = 1f;
-
             for (int i = 0; i < n - 1; i++)
             {
                 PointF a = polyline[i];
                 PointF b = polyline[i + 1];
-
                 float dx = b.X - a.X;
                 float dy = b.Y - a.Y;
                 float lenSq = dx * dx + dy * dy;
-                if (lenSq < 1e-4f) continue;
-
-                float t = ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq;
-                // Cho phép tia kéo dài ở đoạn đầu tiên và đoạn cuối cùng để mặt cắt xuyên suốt toàn không gian
-                float clampedT = (i == 0 && t < 0f) ? t : ((i == n - 2 && t > 1f) ? t : Math.Clamp(t, 0f, 1f));
-
-                float projX = a.X + clampedT * dx;
-                float projY = a.Y + clampedT * dy;
-                float distSq = (p.X - projX) * (p.X - projX) + (p.Y - projY) * (p.Y - projY);
-
-                if (distSq < bestDistSq)
-                {
-                    bestDistSq = distSq;
-                    // Trong hệ tọa độ màn hình (X sang phải, Y xuống dưới):
-                    // Cross = dx * (p.Y - a.Y) - dy * (p.X - a.X) < 0 tương ứng với phía bên TRÁI hướng vẽ (a -> b)
-                    float cross = dx * (p.Y - a.Y) - dy * (p.X - a.X);
-                    bestSign = cross < 0f ? -1f : 1f;
-                }
+                float t = lenSq > 1e-5f ? Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq, 0f, 1f) : 0f;
+                float px = a.X + t * dx;
+                float py = a.Y + t * dy;
+                float dSq = (p.X - px) * (p.X - px) + (p.Y - py) * (p.Y - py);
+                if (dSq < bestDistSq) bestDistSq = dSq;
             }
-
-            return bestSign * MathF.Sqrt(bestDistSq);
+            return MathF.Sqrt(bestDistSq);
         }
 
-        private static List<int> AssembleOrderedLoop(List<Vector3> vertices, List<(int A, int B)> segments)
+        private static float ComputeSignedDistanceToExtendedPolyline(
+            PointF p,
+            List<PointF> extendedPoly,
+            List<Vector2> rightHalfPolygon)
         {
-            var loop = new List<int>();
-            if (segments.Count == 0) return loop;
+            float dist = ComputeUnsignedDistanceToPolyline(p, extendedPoly);
+            bool inRightHalf = IsPointInPolygon2D(new Vector2(p.X, p.Y), rightHalfPolygon);
+            return inRightHalf ? dist : -dist;
+        }
+
+        /// <summary>
+        /// Nối toàn bộ các đoạn biên tại vết cắt thành danh sách các vòng thiết diện khép kín (Section Loops).
+        /// </summary>
+        private static List<List<int>> AssembleAllOrderedLoops(List<Vector3> vertices, List<(int A, int B)> segments)
+        {
+            var loops = new List<List<int>>();
+            if (segments.Count == 0) return loops;
 
             var used = new bool[segments.Count];
-            loop.Add(segments[0].A);
-            int curr = segments[0].B;
-            used[0] = true;
 
-            for (int step = 0; step < segments.Count; step++)
+            for (int startIdx = 0; startIdx < segments.Count; startIdx++)
             {
-                loop.Add(curr);
-                int nextSeg = -1;
-                float bestDist = float.MaxValue;
+                if (used[startIdx]) continue;
 
-                for (int i = 0; i < segments.Count; i++)
+                var loop = new List<int>();
+                used[startIdx] = true;
+                loop.Add(segments[startIdx].A);
+                int curr = segments[startIdx].B;
+
+                for (int step = 0; step < segments.Count; step++)
                 {
-                    if (used[i]) continue;
-                    if (segments[i].A == curr)
+                    if (curr == loop[0]) break;
+                    loop.Add(curr);
+
+                    int nextSeg = -1;
+                    float bestDist = float.MaxValue;
+
+                    for (int i = 0; i < segments.Count; i++)
                     {
-                        nextSeg = i;
-                        break;
+                        if (used[i]) continue;
+                        if (segments[i].A == curr)
+                        {
+                            nextSeg = i;
+                            bestDist = 0f;
+                            break;
+                        }
+                        float d = Vector3.DistanceSquared(vertices[curr], vertices[segments[i].A]);
+                        if (d < bestDist)
+                        {
+                            bestDist = d;
+                            nextSeg = i;
+                        }
                     }
-                    float d = Vector3.DistanceSquared(vertices[curr], vertices[segments[i].A]);
-                    if (d < bestDist)
+
+                    if (nextSeg < 0 || bestDist > 250f) break;
+                    used[nextSeg] = true;
+                    curr = segments[nextSeg].B;
+                }
+
+                if (loop.Count >= 3)
+                {
+                    loops.Add(loop);
+                }
+            }
+
+            return loops;
+        }
+
+        /// <summary>
+        /// Đóng nắp kín hoàn toàn vòng thiết diện mặt cắt (sectionLoop) bằng Lưới Dải Mặt Kẻ Trục Trung Tâm (Ruled Spine Strip Triangulation):
+        /// - Tạo trục xương sống 3D (Ruled Center Spine) chạy dọc theo đúng biên dạng đường cắt 2D (Thẳng, Zíc-zắc, Cong, Lượn sóng, Bậc thang, Chữ V, Tự do)
+        ///   tại độ sâu trung bình của mặt cắt.
+        /// - Khâu toàn bộ các đỉnh biên của sectionLoop vào trục xương sống mặt cắt, đảm bảo lấp kín 100% phần diện tích mặt cắt không bao giờ bị hở trắng.
+        /// </summary>
+        private static void CapSectionLoopInRuledParameterSpace(
+            TeddyMesh mesh,
+            List<int> sectionLoop,
+            List<PointF> extendedPoly,
+            VirtualTrackballCamera camera,
+            Size viewport,
+            List<TeddyTriangle> keptTriangles)
+        {
+            int n = sectionLoop.Count;
+            if (n < 3) return;
+
+            // Tính bảng độ dài cung tích lũy của extendedPoly
+            int polyCount = extendedPoly.Count;
+            float[] cumArc = new float[polyCount];
+            cumArc[0] = 0f;
+            for (int i = 1; i < polyCount; i++)
+            {
+                cumArc[i] = cumArc[i - 1] + StrokeProcessor.Distance(extendedPoly[i - 1], extendedPoly[i]);
+            }
+
+            float[] loopArc = new float[n];
+            float[] loopViewZ = new float[n];
+            float minS = float.MaxValue;
+            float maxS = float.MinValue;
+            float sumZAll = 0f;
+
+            for (int i = 0; i < n; i++)
+            {
+                Vector3 sp = camera.ProjectToScreen(mesh.Vertices[sectionLoop[i]], viewport);
+                float s = ProjectPointToPolylineArcLength(new PointF(sp.X, sp.Y), extendedPoly, cumArc);
+                loopArc[i] = s;
+                loopViewZ[i] = sp.Z;
+                if (s < minS) minS = s;
+                if (s > maxS) maxS = s;
+                sumZAll += sp.Z;
+            }
+            float avgZAll = sumZAll / n;
+
+            // Tính hướng pháp tuyến hướng từ tâm phần thân còn lại ra phía mặt cắt để đồng bộ chiều tam giác nắp
+            Vector3 meshCentroid = ComputeMeshCentroid(mesh);
+            Vector3 loopCentroid = Vector3.Zero;
+            for (int i = 0; i < n; i++) loopCentroid += mesh.Vertices[sectionLoop[i]];
+            loopCentroid /= n;
+
+            Vector3 outwardDir = loopCentroid - meshCentroid;
+            if (outwardDir.LengthSquared() < 1e-4f)
+            {
+                outwardDir = camera.GetCameraForwardInWorld();
+            }
+            else
+            {
+                outwardDir = Vector3.Normalize(outwardDir);
+            }
+
+            void AddOrientedCapTri(int v0, int v1, int v2)
+            {
+                if (v0 == v1 || v1 == v2 || v2 == v0) return;
+                Vector3 p0 = mesh.Vertices[v0];
+                Vector3 p1 = mesh.Vertices[v1];
+                Vector3 p2 = mesh.Vertices[v2];
+                Vector3 nrm = Vector3.Cross(p1 - p0, p2 - p0);
+                if (Vector3.Dot(nrm, outwardDir) < 0f)
+                {
+                    keptTriangles.Add(new TeddyTriangle(v0, v2, v1, TriangleCategory.Junction, customColor: null, isCutCap: true));
+                }
+                else
+                {
+                    keptTriangles.Add(new TeddyTriangle(v0, v1, v2, TriangleCategory.Junction, customColor: null, isCutCap: true));
+                }
+            }
+
+            float spanS = maxS - minS;
+            if (spanS < 6f)
+            {
+                int capCenterIdx = mesh.Vertices.Count;
+                mesh.Vertices.Add(loopCentroid);
+                for (int i = 0; i < n; i++)
+                {
+                    int vCurr = sectionLoop[i];
+                    int vNext = sectionLoop[(i + 1) % n];
+                    AddOrientedCapTri(vNext, vCurr, capCenterIdx);
+                }
+                return;
+            }
+
+            // Tạo các trạm trục giữa (Spine Stations) dọc theo đoạn [minS, maxS] của đường cắt
+            int stationCount = Math.Clamp((int)(spanS / 4.0f) + 1, 8, 96);
+            float[] stationArc = new float[stationCount];
+            int[] stationVertIdx = new int[stationCount];
+
+            for (int k = 0; k < stationCount; k++)
+            {
+                float t = stationCount > 1 ? k / (float)(stationCount - 1) : 0.5f;
+                float sVal = minS + t * spanS;
+                stationArc[k] = sVal;
+
+                // Nội suy tọa độ màn hình (X, Y) nằm chính xác trên đường cắt extendedPoly tại độ dài cung sVal
+                PointF screenPt = PointAtPolylineArcLength(extendedPoly, cumArc, sVal);
+
+                // Tính độ sâu Z trung bình của mặt cắt tại vị trí sVal
+                float weightedZ = 0f;
+                float weightSum = 0f;
+                for (int i = 0; i < n; i++)
+                {
+                    float ds = MathF.Abs(loopArc[i] - sVal);
+                    float w = 1f / (1f + ds * ds * 0.08f);
+                    weightedZ += loopViewZ[i] * w;
+                    weightSum += w;
+                }
+                float zMid = weightSum > 1e-5f ? (weightedZ / weightSum) : avgZAll;
+
+                Vector3 worldSpinePt = camera.ScreenToWorldPoint(screenPt, viewport, zMid);
+                stationVertIdx[k] = mesh.Vertices.Count;
+                mesh.Vertices.Add(worldSpinePt);
+            }
+
+            // Ánh xạ mỗi đỉnh trên sectionLoop về trạm Spine gần nhất theo độ dài cung s
+            int[] nearestStation = new int[n];
+            for (int i = 0; i < n; i++)
+            {
+                float ratio = (loopArc[i] - minS) / spanS;
+                nearestStation[i] = Math.Clamp((int)MathF.Round(ratio * (stationCount - 1)), 0, stationCount - 1);
+            }
+
+            // Khâu kín toàn bộ biên sectionLoop vào chuỗi trạm Spine
+            for (int i = 0; i < n; i++)
+            {
+                int next = (i + 1) % n;
+                int vCurr = sectionLoop[i];
+                int vNext = sectionLoop[next];
+                int kA = nearestStation[i];
+                int kB = nearestStation[next];
+
+                AddOrientedCapTri(vNext, vCurr, stationVertIdx[kA]);
+
+                if (kA != kB)
+                {
+                    int step = kB > kA ? 1 : -1;
+                    for (int k = kA; k != kB; k += step)
                     {
-                        bestDist = d;
-                        nextSeg = i;
+                        AddOrientedCapTri(vNext, stationVertIdx[k], stationVertIdx[k + step]);
+                    }
+                }
+            }
+        }
+
+        private static PointF PointAtPolylineArcLength(List<PointF> poly, float[] cumArc, float targetArc)
+        {
+            int n = poly.Count;
+            if (n == 0) return PointF.Empty;
+            if (targetArc <= 0f || n == 1) return poly[0];
+            if (targetArc >= cumArc[n - 1]) return poly[n - 1];
+
+            for (int i = 0; i < n - 1; i++)
+            {
+                if (cumArc[i + 1] >= targetArc)
+                {
+                    float segLen = cumArc[i + 1] - cumArc[i];
+                    float t = segLen > 1e-5f ? (targetArc - cumArc[i]) / segLen : 0f;
+                    return new PointF(
+                        poly[i].X + (poly[i + 1].X - poly[i].X) * t,
+                        poly[i].Y + (poly[i + 1].Y - poly[i].Y) * t);
+                }
+            }
+            return poly[n - 1];
+        }
+
+        private static float ProjectPointToPolylineArcLength(PointF p, List<PointF> poly, float[] cumArc)
+        {
+            int n = poly.Count;
+            float bestDistSq = float.MaxValue;
+            float bestArc = 0f;
+
+            for (int i = 0; i < n - 1; i++)
+            {
+                PointF a = poly[i];
+                PointF b = poly[i + 1];
+                float dx = b.X - a.X;
+                float dy = b.Y - a.Y;
+                float lenSq = dx * dx + dy * dy;
+                float segLen = cumArc[i + 1] - cumArc[i];
+                float t = lenSq > 1e-5f ? Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq, 0f, 1f) : 0f;
+                float px = a.X + t * dx;
+                float py = a.Y + t * dy;
+                float dSq = (p.X - px) * (p.X - px) + (p.Y - py) * (p.Y - py);
+                if (dSq < bestDistSq)
+                {
+                    bestDistSq = dSq;
+                    bestArc = cumArc[i] + t * segLen;
+                }
+            }
+            return bestArc;
+        }
+
+        private static void ClipSurfaceLinesAfterCut(
+            TeddyMesh mesh,
+            List<PointF> extendedPoly,
+            List<Vector2> rightHalfPolygon,
+            VirtualTrackballCamera camera,
+            Size viewport)
+        {
+            if (mesh.SurfaceLines.Count == 0) return;
+
+            var clippedLines = new List<TeddySurfaceLine>();
+            foreach (var line in mesh.SurfaceLines)
+            {
+                var currentSeg = new List<Vector3>();
+                foreach (var pt3D in line.Points)
+                {
+                    Vector3 sp = camera.ProjectToScreen(pt3D, viewport);
+                    bool kept = IsPointInPolygon2D(new Vector2(sp.X, sp.Y), rightHalfPolygon);
+                    if (kept)
+                    {
+                        currentSeg.Add(pt3D);
+                    }
+                    else if (currentSeg.Count >= 2)
+                    {
+                        clippedLines.Add(new TeddySurfaceLine
+                        {
+                            Points = new List<Vector3>(currentSeg),
+                            StrokeColor = line.StrokeColor,
+                            StrokeWidth = line.StrokeWidth,
+                            IsClosedRing = false
+                        });
+                        currentSeg.Clear();
+                    }
+                    else
+                    {
+                        currentSeg.Clear();
                     }
                 }
 
-                if (nextSeg < 0) break;
-                used[nextSeg] = true;
-                curr = segments[nextSeg].B;
-                if (curr == loop[0]) break;
+                if (currentSeg.Count >= 2)
+                {
+                    clippedLines.Add(new TeddySurfaceLine
+                    {
+                        Points = currentSeg,
+                        StrokeColor = line.StrokeColor,
+                        StrokeWidth = line.StrokeWidth,
+                        IsClosedRing = line.IsClosedRing && currentSeg.Count == line.Points.Count
+                    });
+                }
             }
 
-            return loop;
+            mesh.SurfaceLines.Clear();
+            mesh.SurfaceLines.AddRange(clippedLines);
+        }
+
+        private static Vector3 ComputeMeshCentroid(TeddyMesh mesh)
+        {
+            if (mesh == null || mesh.Vertices.Count == 0) return Vector3.Zero;
+            Vector3 sum = Vector3.Zero;
+            foreach (var v in mesh.Vertices) sum += v;
+            return sum / mesh.Vertices.Count;
+        }
+
+        private static void TranslateMesh(TeddyMesh mesh, Vector3 delta)
+        {
+            for (int i = 0; i < mesh.Vertices.Count; i++)
+                mesh.Vertices[i] += delta;
+            for (int i = 0; i < mesh.SpineVertices.Count; i++)
+                mesh.SpineVertices[i] += delta;
+            foreach (var sl in mesh.SurfaceLines)
+            {
+                for (int i = 0; i < sl.Points.Count; i++)
+                    sl.Points[i] += delta;
+            }
+            foreach (var cr in mesh.CutSectionRings)
+            {
+                for (int i = 0; i < cr.Points.Count; i++)
+                    cr.Points[i] += delta;
+            }
+            if (mesh.ActiveBaseRing != null)
+            {
+                for (int i = 0; i < mesh.ActiveBaseRing.Points.Count; i++)
+                    mesh.ActiveBaseRing.Points[i] += delta;
+            }
+        }
+
+        private static void CopyMeshData(TeddyMesh source, TeddyMesh target)
+        {
+            target.Clear();
+            target.BaseColor = source.BaseColor;
+            target.IsCutOffPiece = source.IsCutOffPiece;
+            target.Vertices.AddRange(source.Vertices);
+            target.VertexNormals.AddRange(source.VertexNormals);
+            foreach (var tri in source.Triangles)
+                target.Triangles.Add(tri.Clone());
+            target.Edges.AddRange(source.Edges);
+            target.SpineVertices.AddRange(source.SpineVertices);
+            target.SpineEdges.AddRange(source.SpineEdges);
+            foreach (var sl in source.SurfaceLines)
+                target.SurfaceLines.Add(sl.Clone());
+            foreach (var cr in source.CutSectionRings)
+                target.CutSectionRings.Add(cr.Clone());
+            target.ActiveBaseRing = source.ActiveBaseRing?.Clone();
         }
 
         public static void CompactMeshVertices(TeddyMesh mesh)
