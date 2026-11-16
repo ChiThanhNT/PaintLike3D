@@ -94,6 +94,7 @@ namespace PaintLike.Teddy
         public Color StrokeColor { get; set; } = Color.FromArgb(30, 41, 59);
         public float StrokeWidth { get; set; } = 2.6f;
         public bool IsClosedRing { get; set; } = false;
+        public bool IsDashed { get; set; } = false;
 
         public TeddySurfaceLine Clone()
         {
@@ -102,7 +103,8 @@ namespace PaintLike.Teddy
                 Points = new List<Vector3>(this.Points),
                 StrokeColor = this.StrokeColor,
                 StrokeWidth = this.StrokeWidth,
-                IsClosedRing = this.IsClosedRing
+                IsClosedRing = this.IsClosedRing,
+                IsDashed = this.IsDashed
             };
         }
     }

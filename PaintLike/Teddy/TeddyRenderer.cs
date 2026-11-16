@@ -153,22 +153,24 @@ namespace PaintLike.Teddy
                         polyPts[2] = rt.P2;
 
                         var tri = mesh.Triangles[rt.TriIndex];
+                        bool isInnerOrCap = tri.IsCutCap || rt.IsInteriorBackFace;
                         Color triBaseColor;
                         if (tri.CustomColor.HasValue)
                         {
                             triBaseColor = tri.CustomColor.Value;
                         }
-                        else if (tri.IsCutCap && cutSurfaceViewMode == TeddyCutSurfaceViewMode.HighlightedCrossSection)
+                        else if (tri.IsCutCap)
                         {
-                            triBaseColor = highlightedCapColor;
+                            // Phía trong mặt cắt được tô sẫm màu hơn bên ngoài (hoặc màu vết cắt nếu người dùng chọn riêng)
+                            triBaseColor = cutFillColor ?? highlightedCapColor;
                         }
                         else if (rt.IsInteriorBackFace)
                         {
-                            // Mặt trong lòng khối khi ẩn nắp vết cắt: tông trầm sâu hơn để tạo chiều sâu lòng rỗng 3D
+                            // Mặt phía trong lòng hình khối được tô sẫm màu hơn bên ngoài
                             triBaseColor = Color.FromArgb(
-                                (int)(mesh.BaseColor.R * 0.62f),
-                                (int)(mesh.BaseColor.G * 0.58f),
-                                (int)(mesh.BaseColor.B * 0.65f));
+                                (int)(mesh.BaseColor.R * 0.50f),
+                                (int)(mesh.BaseColor.G * 0.46f),
+                                (int)(mesh.BaseColor.B * 0.50f));
                         }
                         else
                         {
@@ -180,7 +182,8 @@ namespace PaintLike.Teddy
                             rt.ViewNormal,
                             keyLight,
                             fillLight,
-                            style == TeddyRenderStyle.PenAndInk);
+                            style == TeddyRenderStyle.PenAndInk,
+                            isInnerOrCap);
 
                         if (isGhostPiece)
                         {
@@ -287,14 +290,13 @@ namespace PaintLike.Teddy
         }
 
         /// <summary>
-        /// Tạo tông màu thiết diện mặt cắt sáng ấm tương phản nhẹ với vỏ ngoài để người dùng nhìn rõ vị trí bị cắt.
+        /// Tạo tông màu phía trong hình khối / thiết diện mặt cắt SẪM MÀU HƠN bên ngoài.
         /// </summary>
         private static Color ComputeCrossSectionHighlightColor(Color bodyColor)
         {
-            // Pha màu kem sáng ấm (Warm Ivory / Cross-Section Core) để mặt cắt nổi bật rõ ràng so với lớp vỏ ngoài
-            int r = Math.Clamp((int)(bodyColor.R * 0.42f + 255 * 0.58f), 0, 255);
-            int g = Math.Clamp((int)(bodyColor.G * 0.42f + 235 * 0.58f), 0, 255);
-            int b = Math.Clamp((int)(bodyColor.B * 0.38f + 195 * 0.62f), 0, 255);
+            int r = Math.Clamp((int)(bodyColor.R * 0.56f), 0, 255);
+            int g = Math.Clamp((int)(bodyColor.G * 0.52f), 0, 255);
+            int b = Math.Clamp((int)(bodyColor.B * 0.54f), 0, 255);
             return Color.FromArgb(r, g, b);
         }
 
@@ -303,11 +305,22 @@ namespace PaintLike.Teddy
             Vector3 normal,
             Vector3 keyLight,
             Vector3 fillLight,
-            bool toonQuantize)
+            bool toonQuantize,
+            bool isInteriorDark = false)
         {
             float ndotl = MathF.Max(0f, Vector3.Dot(normal, keyLight));
             float fill = MathF.Max(0f, Vector3.Dot(normal, fillLight)) * 0.25f;
             float rim = MathF.Pow(1.0f - Math.Clamp(MathF.Abs(normal.Z), 0f, 1f), 2.4f) * 0.18f;
+
+            if (isInteriorDark)
+            {
+                // Phía trong hình khối giữ độ sẫm màu ổn định hơn bên ngoài, không bị lóa sáng specular
+                float innerLevel = 0.68f + ndotl * 0.26f;
+                int r = Math.Clamp((int)(baseColor.R * innerLevel), 0, 255);
+                int g = Math.Clamp((int)(baseColor.G * innerLevel), 0, 255);
+                int b = Math.Clamp((int)(baseColor.B * innerLevel), 0, 255);
+                return Color.FromArgb(r, g, b);
+            }
 
             if (toonQuantize)
             {
@@ -471,21 +484,23 @@ namespace PaintLike.Teddy
                 DrawSingle3DPolyline(g, sl, camera, viewport, false, isGhostPiece);
             }
 
-            // Vẽ đường viền đánh dấu vị trí thiết diện mặt cắt (nếu đang bật chế độ Tô nổi mặt cắt hoặc Mở rỗng lòng khối)
-            if (cutSurfaceViewMode != TeddyCutSurfaceViewMode.SameAsBodyColor && mesh.CutSectionRings.Count > 0)
+            // Vẽ đường viền đánh dấu vị trí thiết diện mặt cắt bằng NÉT ĐỨT
+            if (mesh.CutSectionRings.Count > 0)
             {
                 foreach (var cr in mesh.CutSectionRings)
                 {
                     DrawSingle3DPolyline(g, cr, camera, viewport, false, isGhostPiece,
-                        overrideColor: isGhostPiece ? Color.FromArgb(105, 225, 29, 72) : Color.FromArgb(225, 225, 29, 72),
-                        overrideWidth: isGhostPiece ? 2.0f : 2.8f);
+                        overrideColor: isGhostPiece ? Color.FromArgb(120, 225, 29, 72) : Color.FromArgb(235, 225, 29, 72),
+                        overrideWidth: isGhostPiece ? 2.2f : 3.0f,
+                        forceDashed: true);
                 }
             }
 
             // Vẽ vòng chọn màu đỏ khi đang ở Extrusion Mode (Mục 4.4 - Hình 3i)
             if (mesh.ActiveBaseRing != null)
             {
-                DrawSingle3DPolyline(g, mesh.ActiveBaseRing, camera, viewport, true, isGhostPiece);
+                DrawSingle3DPolyline(g, mesh.ActiveBaseRing, camera, viewport, true, isGhostPiece,
+                    forceDashed: mesh.ActiveBaseRing.IsDashed);
             }
         }
 
@@ -497,7 +512,8 @@ namespace PaintLike.Teddy
             bool isHighlightRing,
             bool isGhostPiece = false,
             Color? overrideColor = null,
-            float? overrideWidth = null)
+            float? overrideWidth = null,
+            bool forceDashed = false)
         {
             if (line.Points.Count < 2) return;
 
@@ -513,6 +529,10 @@ namespace PaintLike.Teddy
                 p.StartCap = LineCap.Round;
                 p.EndCap = LineCap.Round;
                 p.LineJoin = LineJoin.Round;
+                if (forceDashed || line.IsDashed)
+                {
+                    p.DashPattern = new float[] { 3.5f, 2.5f };
+                }
 
                 var screenPts = new List<PointF>(line.Points.Count + 1);
                 foreach (var pt3D in line.Points)

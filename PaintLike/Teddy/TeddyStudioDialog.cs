@@ -72,10 +72,10 @@ namespace PaintLike.Teddy
 
         // Trạng thái & Mẫu đường cắt 3D (Thẳng, Zíc-zắc, Cong, Lượn sóng, Bậc thang, Chữ V, Cắt tự do)
         private TeddyCutPattern _activeCutPattern = TeddyCutPattern.Freehand;
-        private TeddyCutActionMode _cutActionMode = TeddyCutActionMode.RemoveOneSide;
-        private TeddyCutPieceVisibility _cutPieceVisibility = TeddyCutPieceVisibility.Hidden;
+        private TeddyCutActionMode _cutActionMode = TeddyCutActionMode.SplitIntoTwoMeshes;
+        private TeddyCutPieceVisibility _cutPieceVisibility = TeddyCutPieceVisibility.Visible; // Mặc định giữ lại phần bị cắt
         private TeddyCutSurfaceViewMode _cutSurfaceViewMode = TeddyCutSurfaceViewMode.HighlightedCrossSection;
-        private Color _cutFillColor = Color.FromArgb(251, 146, 60); // Màu tô nổi bật tại vị trí bị cắt
+        private Color? _cutFillColor = null; // Mặc định null: tự động tô phía trong sẫm màu hơn bên ngoài
         private bool _isCutToolActive = false;
         private bool _flipCutRemoveSide = false;
         private float _cutAmplitudePx = 22f;
@@ -286,16 +286,22 @@ namespace PaintLike.Teddy
                 "Đường cắt Chữ V (Chevron V-Cut): Cắt vát mũi nhọn chữ V vào giữa vật thể 3D");
 
             _btnCutFillColor = new Button { Bounds = new Rectangle(687, 46, 82, 28) };
-            UITheme.StyleButton(_btnCutFillColor, IconType.ColorPalette, "Màu cắt", ButtonVariant.Default, false,
-                _toolTip, "Chọn màu tô thêm vào diện tích tại vị trí bị cắt", () => _cutFillColor);
+            UITheme.StyleButton(_btnCutFillColor, IconType.ColorPalette, "Màu trong", ButtonVariant.Default, false,
+                _toolTip, "Màu phía trong hình khối tại vết cắt (Mặc định tự động tô sẫm màu hơn bên ngoài)",
+                () => _cutFillColor ?? Color.FromArgb(
+                    (int)(_modelBaseColor.R * 0.56f),
+                    (int)(_modelBaseColor.G * 0.52f),
+                    (int)(_modelBaseColor.B * 0.54f)));
             _btnCutFillColor.Click += (s, e) =>
             {
-                using var cd = new ColorDialog { Color = _cutFillColor, FullOpen = true };
+                Color initColor = _cutFillColor ?? Color.FromArgb(
+                    (int)(_modelBaseColor.R * 0.56f),
+                    (int)(_modelBaseColor.G * 0.52f),
+                    (int)(_modelBaseColor.B * 0.54f));
+                using var cd = new ColorDialog { Color = initColor, FullOpen = true };
                 if (cd.ShowDialog(this) == DialogResult.OK)
                 {
                     _cutFillColor = cd.Color;
-                    _cutSurfaceViewMode = TeddyCutSurfaceViewMode.HighlightedCrossSection;
-                    UpdateCutPatternToolbarState();
                     _btnCutFillColor.Invalidate();
                     _viewportPanel.Invalidate();
                 }
@@ -305,13 +311,13 @@ namespace PaintLike.Teddy
             _btnCutSurfaceViewMode = new Button { Bounds = new Rectangle(772, 46, 108, 28) };
             _btnCutSurfaceViewMode.Click += (s, e) =>
             {
-                _cutSurfaceViewMode = _cutSurfaceViewMode == TeddyCutSurfaceViewMode.HighlightedCrossSection
-                    ? TeddyCutSurfaceViewMode.OpenHollowInterior
-                    : TeddyCutSurfaceViewMode.HighlightedCrossSection;
+                _cutPieceVisibility = _cutPieceVisibility == TeddyCutPieceVisibility.Visible
+                    ? TeddyCutPieceVisibility.Hidden
+                    : TeddyCutPieceVisibility.Visible;
                 UpdateCutPatternToolbarState();
-                string surfMsg = _cutSurfaceViewMode == TeddyCutSurfaceViewMode.HighlightedCrossSection
-                    ? "Chế độ [Vị trí cắt: Hiện]: Đang tô màu nổi bật vào diện tích tại vị trí bị cắt."
-                    : "Chế độ [Vị trí cắt: Ẩn]: Đã ẩn lớp tô mặt cắt để bạn nhìn thẳng vào bên trong vị trí bị cắt!";
+                string surfMsg = _cutPieceVisibility == TeddyCutPieceVisibility.Visible
+                    ? "Chế độ [Phần cắt: Hiện]: Giữ lại và hiển thị phần bị cắt cùng mặt trong tô sẫm màu."
+                    : "Chế độ [Phần cắt: Ẩn]: Đã ẩn tạm phần bị cắt để nhìn trực diện vào mặt trong tô sẫm màu!";
                 UpdateGestureModeState(surfMsg);
                 _viewportPanel.Invalidate();
             };
@@ -527,15 +533,15 @@ namespace PaintLike.Teddy
 
             if (_btnCutSurfaceViewMode != null)
             {
-                if (_cutSurfaceViewMode == TeddyCutSurfaceViewMode.HighlightedCrossSection)
+                if (_cutPieceVisibility == TeddyCutPieceVisibility.Visible)
                 {
-                    UITheme.StyleButton(_btnCutSurfaceViewMode, IconType.EyeOpen, "Vị trí cắt: Hiện", ButtonVariant.Accent, false,
-                        _toolTip, "Đang HIỆN màu tô tại vị trí bị cắt. Bấm để ẨN nắp vết cắt và nhìn vào bên trong vị trí bị cắt!");
+                    UITheme.StyleButton(_btnCutSurfaceViewMode, IconType.EyeOpen, "Phần cắt: Hiện", ButtonVariant.Accent, false,
+                        _toolTip, "Đang GIỮ LẠI & HIỆN phần bị cắt. Bấm để ẨN tạm phần bị cắt khi muốn nhìn trực diện vào mặt cắt!");
                 }
                 else
                 {
-                    UITheme.StyleButton(_btnCutSurfaceViewMode, IconType.EyeClosed, "Vị trí cắt: Ẩn", ButtonVariant.Default, false,
-                        _toolTip, "Đang ẨN mặt tô tại vị trí bị cắt để nhìn xuyên vào lòng khối. Bấm để HIỆN lại màu tô tại vị trí bị cắt!");
+                    UITheme.StyleButton(_btnCutSurfaceViewMode, IconType.EyeClosed, "Phần cắt: Ẩn", ButtonVariant.Default, false,
+                        _toolTip, "Đang ẨN tạm phần bị cắt. Bấm để HIỆN lại phần bị cắt!");
                 }
             }
         }
@@ -1255,16 +1261,15 @@ namespace PaintLike.Teddy
                 g.DrawLines(glowPen, poly.ToArray());
             }
 
-            // 3. Đường cắt chính sắc nét màu Đỏ Coral / Rose
-            Color mainCutColor = _cutActionMode == TeddyCutActionMode.SplitIntoTwoMeshes
-                ? Color.FromArgb(2, 132, 199)
-                : Color.FromArgb(225, 29, 72);
+            // 3. Đường cắt chính biểu diễn bằng NÉT ĐỨT sắc nét
+            Color mainCutColor = Color.FromArgb(225, 29, 72);
 
             using (Pen cutPen = new Pen(mainCutColor, 3.0f))
             {
                 cutPen.StartCap = LineCap.Round;
                 cutPen.EndCap = LineCap.Round;
                 cutPen.LineJoin = LineJoin.Round;
+                cutPen.DashPattern = new float[] { 4.0f, 2.8f };
                 g.DrawLines(cutPen, poly.ToArray());
             }
 

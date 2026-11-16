@@ -741,13 +741,43 @@ namespace PaintLike.Teddy
 
             string patternName = TeddyCutPatternGenerator.GetPatternDisplayName(pattern);
 
-            if (!SliceSingleMeshByDirectedPolyline(mesh, patternedPoly, camera, viewport, markRedRing: true, out _))
+            TeddyMesh rightClone = mesh.Clone();
+            TeddyMesh leftClone = mesh.Clone();
+
+            // Cắt lấy phần thân chính (d >= 0)
+            if (!SliceSingleMeshByDirectedPolyline(rightClone, patternedPoly, camera, viewport, markRedRing: true, out _))
             {
                 statusMessage = $"Đường cắt [{patternName}] chưa đi xuyên qua vật thể. Hãy kéo đường cắt cắt ngang qua khối 3D!";
                 return false;
             }
 
-            statusMessage = $"Đã cắt bỏ phần thừa và tô màu vị trí bị cắt theo mẫu [{patternName}]! Bạn có thể bấm nút 'Vị trí cắt: Hiện / Ẩn' để quan sát vết cắt.";
+            // Cắt và giữ lại phần bị cắt (d < 0) bằng cách đảo chiều polyline
+            var reversedPoly = new List<PointF>(patternedPoly);
+            reversedPoly.Reverse();
+            if (SliceSingleMeshByDirectedPolyline(leftClone, reversedPoly, camera, viewport, markRedRing: false, out _))
+            {
+                leftClone.IsCutOffPiece = true;
+
+                // Tách nhẹ phần bị cắt ra một khoảng dọc theo pháp tuyến đường cắt để lộ rõ mặt cắt sẫm màu bên trong và đường cắt nét đứt
+                float sepPixels = 18f;
+                Vector3 centerWorld = ComputeMeshCentroid(mesh);
+                float centerViewZ = camera.ProjectToScreen(centerWorld, viewport).Z;
+                PointF screenCenter = new PointF(viewport.Width * 0.5f, viewport.Height * 0.5f);
+                Vector3 w0 = camera.ScreenToWorldPoint(screenCenter, viewport, centerViewZ);
+                Vector3 wShift = camera.ScreenToWorldPoint(
+                    new PointF(screenCenter.X + removeSideNormal.X * sepPixels, screenCenter.Y + removeSideNormal.Y * sepPixels),
+                    viewport,
+                    centerViewZ);
+                Vector3 worldDelta = wShift - w0;
+
+                TranslateMesh(rightClone, -worldDelta * 0.35f);
+                TranslateMesh(leftClone, worldDelta * 0.65f);
+                secondSplitMesh = leftClone;
+            }
+
+            CopyMeshData(rightClone, mesh);
+
+            statusMessage = $"Đã cắt ngang hình khối theo mẫu [{patternName}]: Giữ lại phần bị cắt, hiển thị đường cắt nét đứt và tô sẫm màu phía trong hình khối!";
             return true;
         }
 
@@ -934,8 +964,9 @@ namespace PaintLike.Teddy
                 {
                     Points = loopPts,
                     StrokeColor = Color.FromArgb(225, 29, 72),
-                    StrokeWidth = 3.2f,
-                    IsClosedRing = true
+                    StrokeWidth = 3.0f,
+                    IsClosedRing = true,
+                    IsDashed = true
                 });
 
                 if (largestLoopPoints == null || loopPts.Count > largestLoopPoints.Count)
@@ -953,8 +984,9 @@ namespace PaintLike.Teddy
                 {
                     Points = largestLoopPoints,
                     StrokeColor = Color.FromArgb(239, 68, 68),
-                    StrokeWidth = 3.8f,
-                    IsClosedRing = true
+                    StrokeWidth = 3.2f,
+                    IsClosedRing = true,
+                    IsDashed = true
                 };
             }
             else
