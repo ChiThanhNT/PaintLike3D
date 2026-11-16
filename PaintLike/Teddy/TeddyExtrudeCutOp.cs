@@ -15,14 +15,18 @@ namespace PaintLike.Teddy
         /// <summary>
         /// [Mục 5.3 - Hình 17 & 18] Thực hiện phép Đùn khối (Extrusion) hoặc Khoét lõm (Cavity)
         /// từ vòng chọn màu đỏ (ActiveBaseRing) dọc theo nét vẽ đùn 2D bằng thuật toán quét 2 con trỏ (Two-Pointer Sweep).
+        /// Khi Đùn khối (Extrusion), hàm tạo ra một khối 3D mới độc lập (TeddyMesh riêng) không đục thủng khối cũ,
+        /// cho phép chọn riêng và xóa riêng khối đùn thêm này mà khối cũ vẫn nguyên vẹn 100%.
         /// </summary>
         public static bool TryExtrudeOrDigFromBaseRing(
             TeddyMesh mesh,
             IReadOnlyList<PointF> rawExtrudeStroke,
             VirtualTrackballCamera camera,
             Size viewport,
+            out TeddyMesh? extrudedMesh,
             out string statusMessage)
         {
+            extrudedMesh = null;
             statusMessage = "";
             if (mesh == null || mesh.IsEmpty || mesh.ActiveBaseRing == null || mesh.ActiveBaseRing.Points.Count < 4)
             {
@@ -101,10 +105,6 @@ namespace PaintLike.Teddy
             Vector3 apexOffset = sweepSlices[sweepSlices.Count - 1].Center - ringCenter;
             bool isCavity = Vector3.Dot(apexOffset, ringNormal) < -ringRadius * 0.15f;
 
-            // Bước 4: Xóa các tam giác cũ nằm bên trong vòng chọn Base Ring trên bề mặt mô hình
-            RemoveTrianglesInsideBaseRing(mesh, baseRing, ringCenter, ringNormal, uAxis, vAxis, ringRadius, out List<int> holeBoundaryVerts);
-
-            // Bước 5: Tạo các vòng thiết diện 3D dọc theo đường quét và khâu lưới (Hình 18b)
             int nRing = baseRing.Count;
             var localRingOffsets = new Vector2[nRing];
             for (int i = 0; i < nRing; i++)
@@ -113,116 +113,239 @@ namespace PaintLike.Teddy
                 localRingOffsets[i] = new Vector2(Vector3.Dot(rel, uAxis), Vector3.Dot(rel, vAxis));
             }
 
-            var ringVertexIndices = new List<int[]>();
-
-            // Vòng 0: Khớp trực tiếp lên bề mặt tại vị trí Base Ring
-            int[] ring0 = new int[nRing];
-            for (int i = 0; i < nRing; i++)
+            if (!isCavity)
             {
-                // Hạ nhẹ chân vòng 0 xuống 1.2 đơn vị để hàn kín vào thân mô hình
-                Vector3 rootPt = baseRing[i] - ringNormal * 1.2f;
-                ring0[i] = mesh.Vertices.Count;
-                mesh.Vertices.Add(rootPt);
-            }
-            ringVertexIndices.Add(ring0);
-
-            // Nếu có biên lỗ thủng từ các tam giác vừa xóa, khâu kín biên lỗ thủng vào Vòng 0
-            if (holeBoundaryVerts.Count >= 3)
-            {
-                StitchHoleBoundaryToBaseRing(mesh, holeBoundaryVerts, ring0, ringCenter, uAxis, vAxis);
-            }
-
-            // Sinh các vòng tiếp theo từ danh sách lát cắt 2 con trỏ
-            Vector3 prevCenter = ringCenter;
-            Vector3 currTangent = isCavity ? -ringNormal : ringNormal;
-
-            for (int s = 0; s < sweepSlices.Count; s++)
-            {
-                var slice = sweepSlices[s];
-                Vector3 stepVec = slice.Center - prevCenter;
-                if (stepVec.LengthSquared() > 1e-3f)
+                // =========================================================================
+                // ĐÙN KHỐI LỒI (EXTRUSION): Tạo một TeddyMesh độc lập riêng biệt!
+                // Giữ nguyên 100% khối cơ sở (không đục thủng, không hàn gộp),
+                // cho phép click chọn riêng và xóa riêng khối đùn này.
+                // =========================================================================
+                extrudedMesh = new TeddyMesh
                 {
-                    currTangent = Vector3.Normalize(stepVec);
-                }
+                    BaseColor = mesh.BaseColor
+                };
 
-                // Khung tọa độ cục bộ vuông góc với hướng đùn (Mục 5.3: "almost perpendicular to the direction of the extrusion")
-                Vector3 sliceU = slice.ChordDir;
-                Vector3 sliceV = Vector3.Normalize(Vector3.Cross(currTangent, sliceU));
-                if (Vector3.Dot(sliceV, vAxis) < 0f) sliceV = -sliceV;
-                sliceU = Vector3.Normalize(Vector3.Cross(sliceV, currTangent));
+                var ringVertexIndices = new List<int[]>();
 
-                float scaleU = Math.Clamp(slice.Scale, 0.08f, 3.2f);
-                // Giữ độ phồng tròn trịa theo phương vuông góc với màn hình
-                float scaleV = Math.Clamp(MathF.Pow(scaleU, 0.78f), 0.08f, 2.5f);
-
-                int[] ringK = new int[nRing];
+                // Vòng 0: Khớp sát bề mặt mô hình
+                int[] ring0 = new int[nRing];
                 for (int i = 0; i < nRing; i++)
                 {
-                    Vector2 loc = localRingOffsets[i];
-                    Vector3 pt3D = slice.Center + sliceU * (loc.X * scaleU) + sliceV * (loc.Y * scaleV);
-                    ringK[i] = mesh.Vertices.Count;
-                    mesh.Vertices.Add(pt3D);
+                    // Lùi nhẹ 0.4 đơn vị vào khối cơ sở để hai khối tiếp xúc khít, không để hở khe
+                    Vector3 rootPt = baseRing[i] - ringNormal * 0.4f;
+                    ring0[i] = extrudedMesh.Vertices.Count;
+                    extrudedMesh.Vertices.Add(rootPt);
+                }
+                ringVertexIndices.Add(ring0);
+
+                // Nắp đáy (Bottom Cap) tại Vòng 0 để khối mới là một solid 3D kín hoàn chỉnh (watertight solid)
+                Vector3 baseCenter = ringCenter - ringNormal * 0.4f;
+                int baseCenterIdx = extrudedMesh.Vertices.Count;
+                extrudedMesh.Vertices.Add(baseCenter);
+                for (int i = 0; i < nRing; i++)
+                {
+                    int next = (i + 1) % nRing;
+                    extrudedMesh.Triangles.Add(new TeddyTriangle(ring0[next], ring0[i], baseCenterIdx));
                 }
 
-                ringVertexIndices.Add(ringK);
-                prevCenter = slice.Center;
-            }
+                // Sinh các vòng tiếp theo từ danh sách lát cắt 2 con trỏ
+                Vector3 prevCenter = ringCenter;
+                Vector3 currTangent = ringNormal;
 
-            // Khâu các vòng thiết diện liên tiếp nhau thành mặt lưới (Hình 18b)
-            for (int r = 0; r < ringVertexIndices.Count - 1; r++)
-            {
-                int[] rA = ringVertexIndices[r];
-                int[] rB = ringVertexIndices[r + 1];
+                for (int s = 0; s < sweepSlices.Count; s++)
+                {
+                    var slice = sweepSlices[s];
+                    Vector3 stepVec = slice.Center - prevCenter;
+                    if (stepVec.LengthSquared() > 1e-3f)
+                    {
+                        currTangent = Vector3.Normalize(stepVec);
+                    }
+
+                    // Khung tọa độ cục bộ vuông góc với hướng đùn
+                    Vector3 sliceU = slice.ChordDir;
+                    Vector3 sliceV = Vector3.Normalize(Vector3.Cross(currTangent, sliceU));
+                    if (Vector3.Dot(sliceV, vAxis) < 0f) sliceV = -sliceV;
+                    sliceU = Vector3.Normalize(Vector3.Cross(sliceV, currTangent));
+
+                    float scaleU = Math.Clamp(slice.Scale, 0.08f, 3.2f);
+                    float scaleV = Math.Clamp(MathF.Pow(scaleU, 0.78f), 0.08f, 2.5f);
+
+                    int[] ringK = new int[nRing];
+                    for (int i = 0; i < nRing; i++)
+                    {
+                        Vector2 loc = localRingOffsets[i];
+                        Vector3 pt3D = slice.Center + sliceU * (loc.X * scaleU) + sliceV * (loc.Y * scaleV);
+                        ringK[i] = extrudedMesh.Vertices.Count;
+                        extrudedMesh.Vertices.Add(pt3D);
+                    }
+
+                    ringVertexIndices.Add(ringK);
+                    prevCenter = slice.Center;
+                }
+
+                // Khâu các vòng thiết diện liên tiếp nhau thành mặt lưới
+                for (int r = 0; r < ringVertexIndices.Count - 1; r++)
+                {
+                    int[] rA = ringVertexIndices[r];
+                    int[] rB = ringVertexIndices[r + 1];
+
+                    for (int i = 0; i < nRing; i++)
+                    {
+                        int next = (i + 1) % nRing;
+                        int a0 = rA[i];
+                        int a1 = rA[next];
+                        int b0 = rB[i];
+                        int b1 = rB[next];
+
+                        extrudedMesh.Triangles.Add(new TeddyTriangle(a0, a1, b1));
+                        extrudedMesh.Triangles.Add(new TeddyTriangle(a0, b1, b0));
+                    }
+                }
+
+                // Đóng nắp chóp (Apex cap) ở đỉnh cuối của nét đùn
+                int[] lastRing = ringVertexIndices[ringVertexIndices.Count - 1];
+                Vector3 apexCenter = Vector3.Zero;
+                for (int i = 0; i < nRing; i++) apexCenter += extrudedMesh.Vertices[lastRing[i]];
+                apexCenter /= nRing;
+                apexCenter += currTangent * (ringRadius * 0.12f);
+
+                int apexIdx = extrudedMesh.Vertices.Count;
+                extrudedMesh.Vertices.Add(apexCenter);
 
                 for (int i = 0; i < nRing; i++)
                 {
                     int next = (i + 1) % nRing;
-                    int a0 = rA[i];
-                    int a1 = rA[next];
-                    int b0 = rB[i];
-                    int b1 = rB[next];
+                    extrudedMesh.Triangles.Add(new TeddyTriangle(lastRing[i], lastRing[next], apexIdx));
+                }
 
-                    if (!isCavity)
+                mesh.ActiveBaseRing = null;
+                extrudedMesh.BuildConnectivity();
+                extrudedMesh.RecalculateNormals();
+
+                statusMessage = $"Đã đùn thành khối 3D mới độc lập (Extrusion - Hình 6 & 18) gồm {sweepSlices.Count} lát cắt.";
+                return true;
+            }
+            else
+            {
+                // =========================================================================
+                // KHOÉT LÕM (CAVITY): Biến dạng trực tiếp vào lòng khối cơ sở
+                // =========================================================================
+                extrudedMesh = null;
+
+                // Bước 4: Xóa các tam giác cũ nằm bên trong vòng chọn Base Ring trên bề mặt mô hình
+                RemoveTrianglesInsideBaseRing(mesh, baseRing, ringCenter, ringNormal, uAxis, vAxis, ringRadius, out List<int> holeBoundaryVerts);
+
+                // Bước 5: Tạo các vòng thiết diện 3D dọc theo đường quét và khâu lưới (Hình 18b)
+                var ringVertexIndices = new List<int[]>();
+
+                // Vòng 0: Khớp trực tiếp lên bề mặt tại vị trí Base Ring
+                int[] ring0 = new int[nRing];
+                for (int i = 0; i < nRing; i++)
+                {
+                    // Hạ nhẹ chân vòng 0 xuống 1.2 đơn vị để hàn kín vào thân mô hình
+                    Vector3 rootPt = baseRing[i] - ringNormal * 1.2f;
+                    ring0[i] = mesh.Vertices.Count;
+                    mesh.Vertices.Add(rootPt);
+                }
+                ringVertexIndices.Add(ring0);
+
+                // Nếu có biên lỗ thủng từ các tam giác vừa xóa, khâu kín biên lỗ thủng vào Vòng 0
+                if (holeBoundaryVerts.Count >= 3)
+                {
+                    StitchHoleBoundaryToBaseRing(mesh, holeBoundaryVerts, ring0, ringCenter, uAxis, vAxis);
+                }
+
+                // Sinh các vòng tiếp theo từ danh sách lát cắt 2 con trỏ
+                Vector3 prevCenter = ringCenter;
+                Vector3 currTangent = -ringNormal;
+
+                for (int s = 0; s < sweepSlices.Count; s++)
+                {
+                    var slice = sweepSlices[s];
+                    Vector3 stepVec = slice.Center - prevCenter;
+                    if (stepVec.LengthSquared() > 1e-3f)
                     {
-                        mesh.Triangles.Add(new TeddyTriangle(a0, a1, b1));
-                        mesh.Triangles.Add(new TeddyTriangle(a0, b1, b0));
+                        currTangent = Vector3.Normalize(stepVec);
                     }
-                    else
+
+                    // Khung tọa độ cục bộ vuông góc với hướng đùn (Mục 5.3: "almost perpendicular to the direction of the extrusion")
+                    Vector3 sliceU = slice.ChordDir;
+                    Vector3 sliceV = Vector3.Normalize(Vector3.Cross(currTangent, sliceU));
+                    if (Vector3.Dot(sliceV, vAxis) < 0f) sliceV = -sliceV;
+                    sliceU = Vector3.Normalize(Vector3.Cross(sliceV, currTangent));
+
+                    float scaleU = Math.Clamp(slice.Scale, 0.08f, 3.2f);
+                    float scaleV = Math.Clamp(MathF.Pow(scaleU, 0.78f), 0.08f, 2.5f);
+
+                    int[] ringK = new int[nRing];
+                    for (int i = 0; i < nRing; i++)
                     {
-                        // Nếu khoét lõm vào trong, đảo thứ tự đỉnh để mặt trong hốc lõm hướng ra phía Camera
+                        Vector2 loc = localRingOffsets[i];
+                        Vector3 pt3D = slice.Center + sliceU * (loc.X * scaleU) + sliceV * (loc.Y * scaleV);
+                        ringK[i] = mesh.Vertices.Count;
+                        mesh.Vertices.Add(pt3D);
+                    }
+
+                    ringVertexIndices.Add(ringK);
+                    prevCenter = slice.Center;
+                }
+
+                // Khâu các vòng thiết diện liên tiếp nhau thành mặt lưới (Hình 18b)
+                for (int r = 0; r < ringVertexIndices.Count - 1; r++)
+                {
+                    int[] rA = ringVertexIndices[r];
+                    int[] rB = ringVertexIndices[r + 1];
+
+                    for (int i = 0; i < nRing; i++)
+                    {
+                        int next = (i + 1) % nRing;
+                        int a0 = rA[i];
+                        int a1 = rA[next];
+                        int b0 = rB[i];
+                        int b1 = rB[next];
+
+                        // Đảo thứ tự đỉnh để mặt trong hốc lõm hướng ra phía Camera
                         mesh.Triangles.Add(new TeddyTriangle(a0, b1, a1));
                         mesh.Triangles.Add(new TeddyTriangle(a0, b0, b1));
                     }
                 }
-            }
 
-            // Đóng nắp chóp (Apex cap) ở đỉnh cuối của nét đùn
-            int[] lastRing = ringVertexIndices[ringVertexIndices.Count - 1];
-            Vector3 apexCenter = Vector3.Zero;
-            for (int i = 0; i < nRing; i++) apexCenter += mesh.Vertices[lastRing[i]];
-            apexCenter /= nRing;
-            apexCenter += currTangent * (ringRadius * 0.12f);
+                // Đóng nắp chóp (Apex cap) ở đáy hốc lõm
+                int[] lastRing = ringVertexIndices[ringVertexIndices.Count - 1];
+                Vector3 apexCenter = Vector3.Zero;
+                for (int i = 0; i < nRing; i++) apexCenter += mesh.Vertices[lastRing[i]];
+                apexCenter /= nRing;
+                apexCenter += currTangent * (ringRadius * 0.12f);
 
-            int apexIdx = mesh.Vertices.Count;
-            mesh.Vertices.Add(apexCenter);
+                int apexIdx = mesh.Vertices.Count;
+                mesh.Vertices.Add(apexCenter);
 
-            for (int i = 0; i < nRing; i++)
-            {
-                int next = (i + 1) % nRing;
-                if (!isCavity)
-                    mesh.Triangles.Add(new TeddyTriangle(lastRing[i], lastRing[next], apexIdx));
-                else
+                for (int i = 0; i < nRing; i++)
+                {
+                    int next = (i + 1) % nRing;
                     mesh.Triangles.Add(new TeddyTriangle(lastRing[i], apexIdx, lastRing[next]));
+                }
+
+                mesh.ActiveBaseRing = null;
+                mesh.BuildConnectivity();
+                mesh.RecalculateNormals();
+
+                statusMessage = $"Đã khoét hốc lõm 3D (Digging a Cavity - Hình 7a-c) gồm {sweepSlices.Count} lát cắt.";
+                return true;
             }
+        }
 
-            mesh.ActiveBaseRing = null;
-            mesh.BuildConnectivity();
-            mesh.RecalculateNormals();
-
-            statusMessage = isCavity
-                ? $"Đã khoét hốc lõm 3D (Digging a Cavity - Hình 7a-c) gồm {sweepSlices.Count} lát cắt."
-                : $"Đã đùn khối 3D (Extrusion - Hình 6 & 18) gồm {sweepSlices.Count} lát cắt.";
-            return true;
+        /// <summary>
+        /// Quá tải tương thích ngược cho phép gọi đùn khối không cần nhận tham số out TeddyMesh.
+        /// </summary>
+        public static bool TryExtrudeOrDigFromBaseRing(
+            TeddyMesh mesh,
+            IReadOnlyList<PointF> rawExtrudeStroke,
+            VirtualTrackballCamera camera,
+            Size viewport,
+            out string statusMessage)
+        {
+            return TryExtrudeOrDigFromBaseRing(mesh, rawExtrudeStroke, camera, viewport, out _, out statusMessage);
         }
 
         /// <summary>

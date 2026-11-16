@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Numerics;
 using System.Text;
 
@@ -15,33 +16,49 @@ namespace PaintLike.Teddy
     {
         public static void SaveToFile(TeddyMesh mesh, string filePath)
         {
-            if (mesh == null || mesh.IsEmpty)
+            SaveToFile(new[] { mesh }, filePath);
+        }
+
+        public static void SaveToFile(IReadOnlyList<TeddyMesh> meshes, string filePath)
+        {
+            if (meshes == null || meshes.Count == 0 || !meshes.Any(m => m != null && !m.IsEmpty))
                 throw new InvalidOperationException("Không có dữ liệu lưới 3D để xuất ra file .OBJ.");
 
-            mesh.RecalculateNormals();
             var sb = new StringBuilder();
             var inv = CultureInfo.InvariantCulture;
 
             sb.AppendLine("# Exported from PaintLike Studio - Teddy 3D Freeform Modeler (ACM SIGGRAPH '99)");
-            sb.AppendLine($"# Vertices: {mesh.Vertices.Count}, Faces: {mesh.Triangles.Count}");
-            sb.AppendLine("o TeddyModel");
+            sb.AppendLine($"# Objects: {meshes.Count(m => m != null && !m.IsEmpty)}");
 
-            foreach (Vector3 v in mesh.Vertices)
-            {
-                sb.AppendLine(string.Format(inv, "v {0:F4} {1:F4} {2:F4}", v.X, v.Y, v.Z));
-            }
+            int vOffset = 0;
+            int objIndex = 1;
 
-            foreach (Vector3 vn in mesh.VertexNormals)
+            foreach (var mesh in meshes)
             {
-                sb.AppendLine(string.Format(inv, "vn {0:F4} {1:F4} {2:F4}", vn.X, vn.Y, vn.Z));
-            }
+                if (mesh == null || mesh.IsEmpty) continue;
+                mesh.RecalculateNormals();
 
-            foreach (var tri in mesh.Triangles)
-            {
-                int i0 = tri.V0 + 1;
-                int i1 = tri.V1 + 1;
-                int i2 = tri.V2 + 1;
-                sb.AppendLine($"f {i0}//{i0} {i1}//{i1} {i2}//{i2}");
+                sb.AppendLine($"o Object_{objIndex++}");
+
+                foreach (Vector3 v in mesh.Vertices)
+                {
+                    sb.AppendLine(string.Format(inv, "v {0:F4} {1:F4} {2:F4}", v.X, v.Y, v.Z));
+                }
+
+                foreach (Vector3 vn in mesh.VertexNormals)
+                {
+                    sb.AppendLine(string.Format(inv, "vn {0:F4} {1:F4} {2:F4}", vn.X, vn.Y, vn.Z));
+                }
+
+                foreach (var tri in mesh.Triangles)
+                {
+                    int i0 = tri.V0 + 1 + vOffset;
+                    int i1 = tri.V1 + 1 + vOffset;
+                    int i2 = tri.V2 + 1 + vOffset;
+                    sb.AppendLine($"f {i0}//{i0} {i1}//{i1} {i2}//{i2}");
+                }
+
+                vOffset += mesh.Vertices.Count;
             }
 
             File.WriteAllText(filePath, sb.ToString(), Encoding.UTF8);

@@ -77,11 +77,15 @@ namespace PaintLike.Teddy
             // 4. Nếu nét vẽ nằm trên bề mặt vật thể
             if (projectedSurfacePoints.Count >= 3)
             {
-                if (StrokeProcessor.IsClosedSurfaceStroke(rawStroke) && projectedSurfacePoints.Count >= 6)
+                bool isMostlyOnSurface = hitCount >= (int)(resampled.Count * 0.75f);
+                if (StrokeProcessor.IsClosedSurfaceStroke(rawStroke) && isMostlyOnSurface && projectedSurfacePoints.Count >= 6)
                 {
                     return PaintingStrokeIntent.SelectExtrusionRing;
                 }
-                return PaintingStrokeIntent.PaintOnSurface;
+                if (isMostlyOnSurface)
+                {
+                    return PaintingStrokeIntent.PaintOnSurface;
+                }
             }
 
             return PaintingStrokeIntent.None;

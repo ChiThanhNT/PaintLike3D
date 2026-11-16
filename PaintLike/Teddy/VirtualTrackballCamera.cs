@@ -20,6 +20,10 @@ namespace PaintLike.Teddy
         private bool _isRotating = false;
         private bool _isPanning = false;
 
+        public bool IsRotating => _isRotating;
+        public bool IsPanning => _isPanning;
+        public bool IsInteracting => _isRotating || _isPanning;
+
         public void Reset()
         {
             Rotation = Quaternion.Identity;

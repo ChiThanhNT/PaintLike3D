@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Linq;
 using System.Numerics;
 
 namespace PaintLike.Teddy
@@ -174,11 +175,34 @@ namespace PaintLike.Teddy
             VirtualTrackballCamera camera,
             TeddyRenderStyle style)
         {
+            return RenderTransparentSnapshot(width, height, new[] { mesh }, camera, style);
+        }
+
+        public static Bitmap RenderTransparentSnapshot(
+            int width,
+            int height,
+            IReadOnlyList<TeddyMesh> meshes,
+            VirtualTrackballCamera camera,
+            TeddyRenderStyle style)
+        {
             Bitmap bmp = new Bitmap(Math.Max(1, width), Math.Max(1, height), System.Drawing.Imaging.PixelFormat.Format32bppArgb);
             using (Graphics g = Graphics.FromImage(bmp))
             {
                 g.Clear(Color.Transparent);
-                RenderScene(g, new Size(width, height), mesh, camera, style, null, null, drawBackground: false);
+                if (meshes != null)
+                {
+                    var sorted = meshes.Where(m => m != null && !m.IsEmpty).OrderBy(m =>
+                    {
+                        float sumZ = 0f;
+                        foreach (var v in m.Vertices) sumZ += camera.WorldToView(v).Z;
+                        return m.Vertices.Count > 0 ? sumZ / m.Vertices.Count : 0f;
+                    }).ToList();
+
+                    foreach (var mesh in sorted)
+                    {
+                        RenderScene(g, new Size(width, height), mesh, camera, style, null, null, drawBackground: false);
+                    }
+                }
             }
             return bmp;
         }
