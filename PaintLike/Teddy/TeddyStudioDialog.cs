@@ -1165,11 +1165,6 @@ namespace PaintLike.Teddy
                     cutPieceVisibility: _cutPieceVisibility,
                     cutSurfaceViewMode: _cutSurfaceViewMode,
                     cutFillColor: _cutFillColor);
-
-                if (!_isDrawingStroke && _sceneMeshes.Count == 0)
-                {
-                    DrawEmptyCanvasHint(e.Graphics, _viewportPanel.ClientSize);
-                }
             }
             else
             {
@@ -1323,36 +1318,6 @@ namespace PaintLike.Teddy
             }
 
             g.SmoothingMode = old;
-        }
-
-        private static void DrawEmptyCanvasHint(Graphics g, Size vp)
-        {
-            int boxW = Math.Min(560, vp.Width - 40);
-            int boxH = 114;
-            Rectangle box = new Rectangle((vp.Width - boxW) / 2, (vp.Height - boxH) / 2, boxW, boxH);
-
-            using (GraphicsPath path = UITheme.CreateRoundedRect(box, 12))
-            using (SolidBrush bg = new SolidBrush(Color.FromArgb(245, 255, 255, 255)))
-            using (Pen border = new Pen(Color.FromArgb(180, 99, 102, 241), 1.5f))
-            {
-                g.FillPath(bg, path);
-                g.DrawPath(border, path);
-            }
-
-            string title = "KHÔNG GIAN DỰNG HÌNH 3D TEDDY (ACM SIGGRAPH '99)";
-            string sub = "• Giữ Chuột Trái hoặc Chuột Phải để xoay tự do mô hình 3D 360° | Con lăn để Zoom\r\n" +
-                         "• Bấm các nút ở trên: 'Khối Cầu', 'Khối Hộp', 'Gấu Teddy', 'Quả Cherry' để nạp mô hình\r\n" +
-                         "• Hoặc giữ Shift + Chuột Trái vẽ một vòng khép kín để thổi phồng thành khối 3D!";
-
-            TextRenderer.DrawText(g, title, UITheme.FontSubtitle,
-                new Rectangle(box.X + 12, box.Y + 14, box.Width - 24, 24),
-                UITheme.AccentPrimary,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-
-            TextRenderer.DrawText(g, sub, UITheme.FontBody,
-                new Rectangle(box.X + 16, box.Y + 42, box.Width - 32, 56),
-                UITheme.TextSecondary,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak);
         }
 
         // =========================================================================
