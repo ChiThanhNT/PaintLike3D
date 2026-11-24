@@ -24,9 +24,11 @@ namespace PaintLike.Teddy
     public class TeddyAlgorithmDebugInfo
     {
         public Quaternion CreationViewRotation { get; set; } = Quaternion.Identity;
+        public Vector3 TranslationOffset3D { get; set; } = Vector3.Zero;
 
-        // Hình 13a: Đa giác 2D ban đầu
+        // Hình 13a: Đa giác 2D ban đầu & tọa độ 3D tương ứng
         public List<Vector2> BoundaryPolygon2D { get; set; } = new List<Vector2>();
+        public List<Vector3> BoundaryPolygon3D { get; set; } = new List<Vector3>();
 
         // Hình 13b: Các tam giác CDT kèm nhãn Terminal (T), Sleeve (S), Junction (J)
         public List<Tri2D> CdtTriangles { get; set; } = new List<Tri2D>();
@@ -56,7 +58,9 @@ namespace PaintLike.Teddy
             var copy = new TeddyAlgorithmDebugInfo
             {
                 CreationViewRotation = this.CreationViewRotation,
+                TranslationOffset3D = this.TranslationOffset3D,
                 BoundaryPolygon2D = new List<Vector2>(this.BoundaryPolygon2D),
+                BoundaryPolygon3D = new List<Vector3>(this.BoundaryPolygon3D),
                 RawChordalAxisEdges = new List<(Vector2 A, Vector2 B)>(this.RawChordalAxisEdges),
                 PruningCircles = new List<(Vector2 Center, float Radius, Vector2 EdgeA, Vector2 EdgeB)>(this.PruningCircles),
                 PrunedSpineEdges2D = new List<(Vector2 A, Vector2 B)>(this.PrunedSpineEdges2D),

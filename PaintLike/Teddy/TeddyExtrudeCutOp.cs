@@ -479,7 +479,9 @@ namespace PaintLike.Teddy
                 // =========================================================================
                 extrudedMesh = new TeddyMesh
                 {
-                    BaseColor = mesh.BaseColor
+                    BaseColor = mesh.BaseColor,
+                    GroupId = mesh.GroupId,
+                    LocalRotation = mesh.LocalRotation
                 };
 
                 var ringVertexIndices = new List<int[]>();
@@ -1862,6 +1864,8 @@ namespace PaintLike.Teddy
         private static void CopyMeshData(TeddyMesh source, TeddyMesh target)
         {
             target.Clear();
+            target.GroupId = source.GroupId;
+            target.LocalRotation = source.LocalRotation;
             target.BaseColor = source.BaseColor;
             target.IsCutOffPiece = source.IsCutOffPiece;
             target.Vertices.AddRange(source.Vertices);

@@ -57,6 +57,24 @@ namespace PaintLike.Teddy
         private Point _mouseDownPos = Point.Empty;
         private bool _hasMovedSignificantly = false;
 
+        // Trạng thái Hệ Trục Tọa Độ 3D (Oxyz) & La bàn Trục 3D & Di chuyển Khối 3D
+        private bool _show3DAxes = true;
+        private TeddyAxisSnapView _hoveredGizmoAxis = TeddyAxisSnapView.None;
+        private TeddyAxisDragHandle _hoveredWorldAxisHandle = TeddyAxisDragHandle.None;
+        private bool _isDraggingMesh3D = false;
+        private bool _dragMoved = false;
+        private TeddyAxisDragHandle _activeAxisDragHandle = TeddyAxisDragHandle.None;
+        private Vector3 _dragAxisWorldDir = Vector3.Zero;
+        private readonly List<TeddyMesh> _draggingTargetMeshes = new List<TeddyMesh>();
+        private Point _lastDragMousePos = Point.Empty;
+
+        // Xoay độc lập từng hình 3D quanh tâm O riêng (không xoay các hình khác)
+        private bool _isRotatingObject3D = false;
+        private bool _rotateMoved = false;
+        private Point _lastRotateMousePos = Point.Empty;
+        private readonly List<TeddyMesh> _rotatingTargetMeshes = new List<TeddyMesh>();
+        private Vector3 _rotatingPivotWorld = Vector3.Zero;
+
         // Trạng thái & Mẫu đường cắt 3D (Thẳng, Zíc-zắc, Cong, Lượn sóng, Bậc thang, Chữ V, Cắt tự do)
         private TeddyCutPattern _activeCutPattern = TeddyCutPattern.Freehand;
         private TeddyCutActionMode _cutActionMode = TeddyCutActionMode.SplitIntoTwoMeshes;
@@ -99,6 +117,7 @@ namespace PaintLike.Teddy
         private Button _btnModelColor = null!;
         private Button _btnPaintColor = null!;
         private Button _btnResetCam = null!;
+        private Button _btnToggle3DAxes = null!;
 
         // Nút Cắt & Xuất .OBJ / .PNG
         private Button _btnCutFillColor = null!;
@@ -117,6 +136,7 @@ namespace PaintLike.Teddy
         private Button _btnApplyCut3D = null!;
         private Button _btnApplyBezierSmooth3D = null!;
         private Button _btnApplyBend3D = null!;
+        private Button _btnToolMove3D = null!;
 
         public TeddyStudioDialog()
         {
@@ -133,6 +153,7 @@ namespace PaintLike.Teddy
 
             InitializeStudioLayout();
             UpdateStyleButtonSelection();
+            UITheme.SetButtonSelected(_btnToggle3DAxes, _show3DAxes);
             Update2DToolSelection();
             UpdateCutPatternToolbarState();
             UpdateDeleteButtonState();
@@ -238,28 +259,28 @@ namespace PaintLike.Teddy
             _btnDeleteSelected.Enabled = false;
             _btnDeleteSelected.Click += (s, e) => DeleteSelectedEntity();
 
-            // --- Nhóm 2: CAMERA TRACKBALL & RENDER (X: 378..658) ---
-            _btnStylePenInk = CreateRibbonButton(_panelTopRibbon, new Rectangle(384, 11, 86, 29), IconType.Rename, "Pen & Ink", ButtonVariant.Default,
+            // --- Nhóm 2: CAMERA TRACKBALL & RENDER (X: 378..698) ---
+            _btnStylePenInk = CreateRibbonButton(_panelTopRibbon, new Rectangle(384, 11, 98, 29), IconType.Rename, "Pen & Ink", ButtonVariant.Default,
                 "Phong cách phác họa nét mực + viền đen Silhouette thời gian thực (Hình 1 bài báo)");
             _btnStylePenInk.Click += (s, e) => SetRenderStyle(TeddyRenderStyle.PenAndInk);
 
-            _btnStyleSmooth = CreateRibbonButton(_panelTopRibbon, new Rectangle(473, 11, 88, 29), IconType.Opacity, "Tô bóng 3D", ButtonVariant.Default,
+            _btnStyleSmooth = CreateRibbonButton(_panelTopRibbon, new Rectangle(486, 11, 101, 29), IconType.Opacity, "Tô bóng 3D", ButtonVariant.Default,
                 "Chế độ tô bóng khối 3D Studio mượt (Blinn-Phong + Rim Light)");
             _btnStyleSmooth.Click += (s, e) => SetRenderStyle(TeddyRenderStyle.SmoothShaded);
 
-            _btnStyleWire = CreateRibbonButton(_panelTopRibbon, new Rectangle(564, 11, 88, 29), IconType.Hexagon, "Lưới + Spine", ButtonVariant.Default,
+            _btnStyleWire = CreateRibbonButton(_panelTopRibbon, new Rectangle(591, 11, 101, 29), IconType.Hexagon, "Lưới + Spine", ButtonVariant.Default,
                 "Hiển thị lưới tam giác và Trục Xương Sống (Chordal Axis / Spine)");
             _btnStyleWire.Click += (s, e) => SetRenderStyle(TeddyRenderStyle.WireframeSpine);
 
-            _btnResetCam = CreateRibbonButton(_panelTopRibbon, new Rectangle(384, 44, 86, 28), IconType.ZoomIn, "Reset Góc", ButtonVariant.Default,
-                "Đưa góc xoay Camera Trackball và độ Zoom về mặc định (Space)");
-            _btnResetCam.Click += (s, e) =>
-            {
-                _camera.Reset();
-                _viewportPanel.Invalidate();
-            };
+            _btnResetCam = CreateRibbonButton(_panelTopRibbon, new Rectangle(384, 44, 74, 28), IconType.ZoomIn, "Góc gốc", ButtonVariant.Default,
+                "Đưa hình đang chọn (và góc nhìn Camera) về hướng mặc định ban đầu (Space)");
+            _btnResetCam.Click += (s, e) => ResetActiveRotationAndCamera();
 
-            _btnModelColor = new Button { Bounds = new Rectangle(473, 44, 88, 28) };
+            _btnToggle3DAxes = CreateRibbonButton(_panelTopRibbon, new Rectangle(461, 44, 71, 28), IconType.Axes3D, "Trục 3D", ButtonVariant.Default,
+                "Bật / Tắt Hệ trục tọa độ 3D Oxyz (X Đỏ, Y Xanh lá, Z Xanh dương) & La bàn Trục 3D (Phím A)");
+            _btnToggle3DAxes.Click += (s, e) => Toggle3DAxes();
+
+            _btnModelColor = new Button { Bounds = new Rectangle(535, 44, 81, 28) };
             UITheme.StyleButton(_btnModelColor, IconType.ColorPalette, "Màu khối", ButtonVariant.Default, false,
                 _toolTip, "Đổi màu sắc chất liệu của khối 3D", () => _modelBaseColor);
             _btnModelColor.Click += (s, e) =>
@@ -276,7 +297,7 @@ namespace PaintLike.Teddy
             };
             _panelTopRibbon.Controls.Add(_btnModelColor);
 
-            _btnPaintColor = new Button { Bounds = new Rectangle(564, 44, 88, 28) };
+            _btnPaintColor = new Button { Bounds = new Rectangle(619, 44, 73, 28) };
             UITheme.StyleButton(_btnPaintColor, IconType.ColorPalette, "Màu bút", ButtonVariant.Default, false,
                 _toolTip, "Đổi màu bút vẽ 2D / trang trí bề mặt 3D", () => _surfacePaintColor);
             _btnPaintColor.Click += (s, e) =>
@@ -291,24 +312,24 @@ namespace PaintLike.Teddy
             };
             _panelTopRibbon.Controls.Add(_btnPaintColor);
 
-            // --- Nhóm 3: MẪU ĐƯỜNG CẮT 3D (X: 664..1072) ---
-            AddCutPatternButton(new Rectangle(670, 11, 64, 29), IconType.CutFreehand, "Tự Do", TeddyCutPattern.Freehand,
+            // --- Nhóm 3: MẪU ĐƯỜNG CẮT 3D (X: 703..1101) ---
+            AddCutPatternButton(new Rectangle(709, 11, 62, 29), IconType.CutFreehand, "Tự Do", TeddyCutPattern.Freehand,
                 "Mẫu vẽ nét 2D tự do (dùng để tạo khối 3D, vẽ mặt hoặc cắt tự do)");
-            AddCutPatternButton(new Rectangle(737, 11, 62, 29), IconType.CutStraight, "Thẳng", TeddyCutPattern.Straight,
+            AddCutPatternButton(new Rectangle(774, 11, 60, 29), IconType.CutStraight, "Thẳng", TeddyCutPattern.Straight,
                 "Mẫu đường cắt Thẳng: Kéo Chuột Trái tạo đường cắt 2D thẳng, sau đó bấm [Cắt Khối 3D]");
-            AddCutPatternButton(new Rectangle(802, 11, 66, 29), IconType.CutZigzag, "Zíc-zắc", TeddyCutPattern.Zigzag,
+            AddCutPatternButton(new Rectangle(837, 11, 65, 29), IconType.CutZigzag, "Zíc-zắc", TeddyCutPattern.Zigzag,
                 "Mẫu đường cắt Zíc-zắc: Kéo Chuột Trái tạo đường răng cưa 2D, sau đó bấm [Cắt Khối 3D]");
-            AddCutPatternButton(new Rectangle(871, 11, 60, 29), IconType.CutCurved, "Cong", TeddyCutPattern.Curved,
+            AddCutPatternButton(new Rectangle(905, 11, 58, 29), IconType.CutCurved, "Cong", TeddyCutPattern.Curved,
                 "Mẫu đường cắt Cong: Kéo Chuột Trái tạo đường cong vòm 2D, sau đó bấm [Cắt Khối 3D]");
-            AddCutPatternButton(new Rectangle(934, 11, 60, 29), IconType.CutWave, "Sóng", TeddyCutPattern.Wave,
+            AddCutPatternButton(new Rectangle(966, 11, 58, 29), IconType.CutWave, "Sóng", TeddyCutPattern.Wave,
                 "Mẫu đường cắt Lượn Sóng: Kéo Chuột Trái tạo đường sóng Sin 2D, sau đó bấm [Cắt Khối 3D]");
-            AddCutPatternButton(new Rectangle(997, 11, 69, 29), IconType.CutStepped, "Bậc Thang", TeddyCutPattern.Stepped,
+            AddCutPatternButton(new Rectangle(1027, 11, 68, 29), IconType.CutStepped, "Bậc Thang", TeddyCutPattern.Stepped,
                 "Mẫu đường cắt Bậc Thang: Kéo Chuột Trái tạo đường bậc thang 2D, sau đó bấm [Cắt Khối 3D]");
 
-            AddCutPatternButton(new Rectangle(670, 44, 62, 28), IconType.CutChevronV, "Chữ V", TeddyCutPattern.ChevronV,
+            AddCutPatternButton(new Rectangle(709, 44, 62, 28), IconType.CutChevronV, "Chữ V", TeddyCutPattern.ChevronV,
                 "Mẫu đường cắt Chữ V: Kéo Chuột Trái tạo đường gấp khúc chữ V 2D, sau đó bấm [Cắt Khối 3D]");
 
-            _btnCutFillColor = new Button { Bounds = new Rectangle(735, 44, 86, 28) };
+            _btnCutFillColor = new Button { Bounds = new Rectangle(774, 44, 86, 28) };
             UITheme.StyleButton(_btnCutFillColor, IconType.ColorPalette, "Màu trong", ButtonVariant.Default, false,
                 _toolTip, "Màu phía trong hình khối tại vết cắt (mặc định sẫm màu hơn bên ngoài)",
                 () => _cutFillColor ?? Color.FromArgb(
@@ -331,7 +352,7 @@ namespace PaintLike.Teddy
             };
             _panelTopRibbon.Controls.Add(_btnCutFillColor);
 
-            _btnCutPieceVis = new Button { Bounds = new Rectangle(824, 44, 112, 28) };
+            _btnCutPieceVis = new Button { Bounds = new Rectangle(863, 44, 112, 28) };
             _btnCutPieceVis.Click += (s, e) =>
             {
                 _cutPieceVisibility = _cutPieceVisibility == TeddyCutPieceVisibility.Visible
@@ -345,7 +366,7 @@ namespace PaintLike.Teddy
             };
             _panelTopRibbon.Controls.Add(_btnCutPieceVis);
 
-            _btnFlipCutSide = new Button { Bounds = new Rectangle(939, 44, 70, 28) };
+            _btnFlipCutSide = new Button { Bounds = new Rectangle(978, 44, 72, 28) };
             UITheme.StyleButton(_btnFlipCutSide, IconType.Arrows, "Đảo bên", ButtonVariant.Default, false,
                 _toolTip, "Đảo chiều phía bị cắt (Trái <-> Phải)");
             _btnFlipCutSide.Click += (s, e) =>
@@ -357,16 +378,16 @@ namespace PaintLike.Teddy
             };
             _panelTopRibbon.Controls.Add(_btnFlipCutSide);
 
-            // --- Nhóm 4: XUẤT / NHẬP .OBJ & XUẤT ẢNH .PNG ĐỘC LẬP (X: 1078..1270) ---
-            _btnImportObj = CreateRibbonButton(_panelTopRibbon, new Rectangle(1084, 11, 86, 29), IconType.Import, "Mở .OBJ", ButtonVariant.Default,
+            // --- Nhóm 4: XUẤT / NHẬP .OBJ & XUẤT ẢNH .PNG ĐỘC LẬP (X: 1106..1274) ---
+            _btnImportObj = CreateRibbonButton(_panelTopRibbon, new Rectangle(1112, 11, 76, 29), IconType.Import, "Mở .OBJ", ButtonVariant.Default,
                 "Mở file mô hình 3D định dạng Wavefront .OBJ");
             _btnImportObj.Click += BtnImportObj_Click;
 
-            _btnExportObj = CreateRibbonButton(_panelTopRibbon, new Rectangle(1173, 11, 88, 29), IconType.Save, "Lưu .OBJ", ButtonVariant.Accent,
+            _btnExportObj = CreateRibbonButton(_panelTopRibbon, new Rectangle(1191, 11, 77, 29), IconType.Save, "Lưu .OBJ", ButtonVariant.Accent,
                 "Xuất mô hình 3D ra file .OBJ tiêu chuẩn (Mục 6 bài báo)");
             _btnExportObj.Click += BtnExportObj_Click;
 
-            _btnExportPng = CreateRibbonButton(_panelTopRibbon, new Rectangle(1084, 44, 177, 28), IconType.Export, "Xuất Ảnh PNG", ButtonVariant.Success,
+            _btnExportPng = CreateRibbonButton(_panelTopRibbon, new Rectangle(1112, 44, 156, 28), IconType.Export, "Xuất Ảnh PNG", ButtonVariant.Success,
                 "Kết xuất mô hình 3D hiện tại ra file ảnh .PNG nền trong suốt (RGBA)");
             _btnExportPng.Click += BtnExportPng_Click;
 
@@ -391,44 +412,48 @@ namespace PaintLike.Teddy
             Label lblRun3D = new Label
             {
                 AutoSize = true,
-                Location = new Point(12, 12),
+                Location = new Point(10, 12),
                 Font = UITheme.FontGroupHeader,
                 ForeColor = UITheme.AccentPrimary,
-                Text = "CHẠY THUẬT TOÁN 3D TỪ NÉT 2D:"
+                Text = "THUẬT TOÁN & DI CHUYỂN 3D:"
             };
             _panelActionBar.Controls.Add(lblRun3D);
 
-            _btnApplyInflate3D = CreateRibbonButton(_panelActionBar, new Rectangle(210, 6, 124, 28), IconType.Cube3D, "Tạo Khối 3D", ButtonVariant.Primary,
+            _btnApplyInflate3D = CreateRibbonButton(_panelActionBar, new Rectangle(176, 6, 110, 28), IconType.Cube3D, "Tạo Khối 3D", ButtonVariant.Primary,
                 "Lấy nét phác thảo 2D khép kín trong bộ đệm → Thổi phồng thành khối 3D (Mục 5.1: CDT + Pruning + Oval)");
             _btnApplyInflate3D.Click += (s, e) => ApplyInflate3DFromSketch();
 
-            _btnApplyPaint3D = CreateRibbonButton(_panelActionBar, new Rectangle(339, 6, 118, 28), IconType.Rename, "Dán Nét 3D", ButtonVariant.Default,
+            _btnApplyPaint3D = CreateRibbonButton(_panelActionBar, new Rectangle(290, 6, 104, 28), IconType.Rename, "Dán Nét 3D", ButtonVariant.Default,
                 "Chiếu các nét phác thảo 2D đang nằm trên bóng khối 3D xuống bề mặt vật thể (Mục 5.2)");
             _btnApplyPaint3D.Click += (s, e) => ApplySurfacePaintFromSketch();
 
-            _btnApplyFillColor3D = CreateRibbonButton(_panelActionBar, new Rectangle(462, 6, 108, 28), IconType.ColorPalette, "Tô Vùng 3D", ButtonVariant.Default,
+            _btnApplyFillColor3D = CreateRibbonButton(_panelActionBar, new Rectangle(398, 6, 102, 28), IconType.ColorPalette, "Tô Vùng 3D", ButtonVariant.Default,
                 "Tô màu các mặt tam giác bên trong Vòng chọn đỏ (hoặc nét khoanh 2D khép kín) bằng Màu bút (Phím F)");
             _btnApplyFillColor3D.Click += (s, e) => ApplyFillRegionFromSketch();
 
-            _btnApplyBaseRing3D = CreateRibbonButton(_panelActionBar, new Rectangle(575, 6, 122, 28), IconType.Circle, "Đặt Vòng Đế", ButtonVariant.Default,
+            _btnApplyBaseRing3D = CreateRibbonButton(_panelActionBar, new Rectangle(504, 6, 110, 28), IconType.Circle, "Đặt Vòng Đế", ButtonVariant.Default,
                 "Lấy nét 2D khép kín trên mặt khối → Chiếu thành Vòng Đế đỏ (ActiveBaseRing) để chuẩn bị Đùn/Khoét/Làm mượt");
             _btnApplyBaseRing3D.Click += (s, e) => ApplySetBaseRingFromSketch();
 
-            _btnApplyExtrude3D = CreateRibbonButton(_panelActionBar, new Rectangle(702, 6, 128, 28), IconType.Arrows, "Đùn / Khoét 3D", ButtonVariant.Accent,
+            _btnApplyExtrude3D = CreateRibbonButton(_panelActionBar, new Rectangle(618, 6, 120, 28), IconType.Arrows, "Đùn / Khoét 3D", ButtonVariant.Accent,
                 "Từ Vòng Đế đỏ + nét vòm 2D → Thực hiện Đùn lồi (Extrusion) hoặc Khoét lõm (Cavity) 2 con trỏ (Mục 5.3)");
             _btnApplyExtrude3D.Click += (s, e) => ApplyExtrudeOrCavityFromSketch();
 
-            _btnApplyCut3D = CreateRibbonButton(_panelActionBar, new Rectangle(835, 6, 118, 28), IconType.Scissors, "Cắt Khối 3D", ButtonVariant.Danger,
+            _btnApplyCut3D = CreateRibbonButton(_panelActionBar, new Rectangle(742, 6, 106, 28), IconType.Scissors, "Cắt Khối 3D", ButtonVariant.Danger,
                 "Dùng đường cắt 2D trong bộ đệm (hoặc cắt ngang tâm khối theo mẫu đang chọn) để Cắt vật thể 3D (Mục 5.4)");
             _btnApplyCut3D.Click += (s, e) => ApplyCut3DFromSketch();
 
-            _btnApplyBezierSmooth3D = CreateRibbonButton(_panelActionBar, new Rectangle(958, 6, 134, 28), IconType.Filter, "Mượt Bezier 3D", ButtonVariant.Default,
+            _btnApplyBezierSmooth3D = CreateRibbonButton(_panelActionBar, new Rectangle(852, 6, 122, 28), IconType.Filter, "Mượt Bezier 3D", ButtonVariant.Default,
                 "Làm mượt bề mặt trong Vòng Đế đỏ / nét khoanh 2D bằng nội suy Bezier & Taubin Fairing (Mục 5.5)");
             _btnApplyBezierSmooth3D.Click += (s, e) => ApplyBezierSmoothFromSketch();
 
-            _btnApplyBend3D = CreateRibbonButton(_panelActionBar, new Rectangle(1097, 6, 116, 28), IconType.Bezier, "Uốn Khối 3D", ButtonVariant.Default,
+            _btnApplyBend3D = CreateRibbonButton(_panelActionBar, new Rectangle(978, 6, 106, 28), IconType.Bezier, "Uốn Khối 3D", ButtonVariant.Default,
                 "Lấy 2 nét 2D trong bộ đệm (Nét #1 Reference → Nét #2 Target) để Uốn biến dạng mô hình 3D (Mục 4.7)");
             _btnApplyBend3D.Click += (s, e) => ApplyBend3DFromSketch();
+
+            _btnToolMove3D = CreateRibbonButton(_panelActionBar, new Rectangle(1088, 6, 120, 28), IconType.Arrows, "Di Chuyển 3D", ButtonVariant.Default,
+                "Bật chế độ Di chuyển Khối 3D sang vị trí khác (Phím M). Hoặc nắm kéo trực tiếp tâm O / mũi tên trục X, Y, Z trên khối!");
+            _btnToolMove3D.Click += (s, e) => ToggleMove3DMode();
 
             // =========================================================================
             // 1C. THANH MẪU BÀI BÁO & TRỰC QUAN HÓA TỪNG BƯỚC THUẬT TOÁN (HÌNH 13–15)
@@ -558,7 +583,13 @@ namespace PaintLike.Teddy
             _viewportPanel.MouseMove += ViewportPanel_MouseMove;
             _viewportPanel.MouseUp += ViewportPanel_MouseUp;
             _viewportPanel.MouseEnter += (s, e) => { _isMouseInViewport = true; _viewportPanel.Invalidate(); };
-            _viewportPanel.MouseLeave += (s, e) => { _isMouseInViewport = false; _viewportPanel.Invalidate(); };
+            _viewportPanel.MouseLeave += (s, e) =>
+            {
+                _isMouseInViewport = false;
+                _hoveredGizmoAxis = TeddyAxisSnapView.None;
+                _hoveredWorldAxisHandle = TeddyAxisDragHandle.None;
+                _viewportPanel.Invalidate();
+            };
             this.MouseWheel += ViewportPanel_MouseWheel;
 
             this.Controls.Add(_viewportPanel);
@@ -622,9 +653,9 @@ namespace PaintLike.Teddy
             g.Clear(UITheme.BgToolbar);
 
             UITheme.DrawRibbonGroup(g, new Rectangle(8, 4, 364, 86), "KHỞI TẠO & PHÁC THẢO 2D");
-            UITheme.DrawRibbonGroup(g, new Rectangle(378, 4, 280, 86), "CAMERA TRACKBALL & RENDER");
-            UITheme.DrawRibbonGroup(g, new Rectangle(664, 4, 408, 86), "MẪU ĐƯỜNG CẮT 3D & HIỂN THỊ MẶT CẮT");
-            UITheme.DrawRibbonGroup(g, new Rectangle(1078, 4, 189, 86), "XUẤT .OBJ & ẢNH .PNG");
+            UITheme.DrawRibbonGroup(g, new Rectangle(378, 4, 320, 86), "CAMERA TRACKBALL & RENDER");
+            UITheme.DrawRibbonGroup(g, new Rectangle(703, 4, 398, 86), "MẪU ĐƯỜNG CẮT 3D & HIỂN THỊ MẶT CẮT");
+            UITheme.DrawRibbonGroup(g, new Rectangle(1106, 4, 168, 86), "XUẤT .OBJ & ẢNH .PNG");
 
             using Pen bottomLine = new Pen(UITheme.BorderDefault, 1f);
             g.DrawLine(bottomLine, 0, _panelTopRibbon.Height - 1, _panelTopRibbon.Width, _panelTopRibbon.Height - 1);
@@ -648,11 +679,94 @@ namespace PaintLike.Teddy
             }
             else if (e.Button == MouseButtons.Right || (e.Button == MouseButtons.Left && isAlt))
             {
+                if (_algorithmStepView == TeddyAlgorithmStepView.Final3DModel && HasVisibleMeshes())
+                {
+                    if (HitTestMesh(e.Location, _viewportPanel.ClientSize, out var hitRotateMesh) && hitRotateMesh != null)
+                    {
+                        _sketchLayer.SelectedStroke = null;
+                        _selectedSurfaceLine = null;
+                        _selectedMesh = hitRotateMesh;
+                        UpdateDeleteButtonState();
+                    }
+
+                    var targetGroup = GetMeshGroup(_selectedMesh ?? ActiveMesh);
+                    if (targetGroup.Count > 0 && ComputeMeshesBounds(targetGroup, out Vector3 rMin, out Vector3 rMax))
+                    {
+                        _rotatingTargetMeshes.Clear();
+                        _rotatingTargetMeshes.AddRange(targetGroup);
+                        _rotatingPivotWorld = (rMin + rMax) * 0.5f;
+                        PushUndoState();
+                        _isRotatingObject3D = true;
+                        _rotateMoved = false;
+                        _lastRotateMousePos = e.Location;
+                        _viewportPanel.Cursor = Cursors.SizeAll;
+                        UpdateStatus($"Đang xoay độc lập hình 3D đang chọn quanh tâm O({(int)MathF.Round(_rotatingPivotWorld.X)}, {(int)MathF.Round(_rotatingPivotWorld.Y)}, {(int)MathF.Round(_rotatingPivotWorld.Z)}) (hình khác đứng yên).");
+                        _viewportPanel.Invalidate();
+                        return;
+                    }
+                }
+
+                SyncCameraPivotToActiveShape();
                 _camera.StartRotate(e.Location);
                 _viewportPanel.Cursor = Cursors.SizeAll;
             }
             else if (e.Button == MouseButtons.Left)
             {
+                Quaternion? activeGizmoObjRot = null;
+                if (_show3DAxes &&
+                    (_algorithmStepView == TeddyAlgorithmStepView.Final3DModel || _algorithmStepView == TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D))
+                {
+                    GetActiveShapeAxesAnchor(out _, out _, out var gBounds, out Quaternion gRot,
+                        _algorithmStepView == TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D ? ActiveMesh : null);
+                    if (gBounds.HasValue) activeGizmoObjRot = gRot;
+
+                    if (TeddyRenderer.HitTestCornerAxisGizmo(_viewportPanel.ClientSize, _camera, e.Location, out var hitAxis, out var gizmoCard, activeGizmoObjRot) &&
+                        gizmoCard.Contains(e.Location))
+                    {
+                        if (hitAxis != TeddyAxisSnapView.None)
+                        {
+                            SnapCameraToAxisView(hitAxis);
+                        }
+                        return;
+                    }
+                }
+
+                // Kiểm tra kéo trực tiếp vào Tâm O hoặc Trục X, Y, Z của khối 3D đang chọn
+                bool isCtrl = Control.ModifierKeys.HasFlag(Keys.Control);
+                if (_show3DAxes &&
+                    _algorithmStepView == TeddyAlgorithmStepView.Final3DModel &&
+                    HasVisibleMeshes())
+                {
+                    GetActiveShapeAxesAnchor(out Vector3 hOrigin, out float hRadius, out var hBounds, out Quaternion hRot);
+                    if (hBounds.HasValue &&
+                        TeddyRenderer.HitTestWorldAxesGizmo(_viewportPanel.ClientSize, _camera, hOrigin, hRadius, e.Location, out var dragHandle, out Vector3 axisDir, hRot))
+                    {
+                        StartDraggingMesh3D(dragHandle, axisDir, e.Location);
+                        return;
+                    }
+                }
+
+                // Kiểm tra chế độ [Di Chuyển 3D] hoặc giữ Ctrl + Kéo Chuột Trái lên khối 3D
+                if ((_sketchToolMode == Sketch2DToolMode.Move3DMesh || isCtrl) &&
+                    _algorithmStepView == TeddyAlgorithmStepView.Final3DModel &&
+                    HasVisibleMeshes())
+                {
+                    if (HitTestMesh(e.Location, _viewportPanel.ClientSize, out var hitMesh) && hitMesh != null)
+                    {
+                        _sketchLayer.SelectedStroke = null;
+                        _selectedSurfaceLine = null;
+                        _selectedMesh = hitMesh;
+                        UpdateDeleteButtonState();
+                        StartDraggingMesh3D(TeddyAxisDragHandle.FreeCenterO, Vector3.Zero, e.Location, hitMesh);
+                        return;
+                    }
+                    else if (_sketchToolMode == Sketch2DToolMode.Move3DMesh)
+                    {
+                        StartDraggingMesh3D(TeddyAxisDragHandle.FreeCenterO, Vector3.Zero, e.Location);
+                        return;
+                    }
+                }
+
                 if (_sketchToolMode == Sketch2DToolMode.EraseStroke)
                 {
                     PushUndoState();
@@ -688,10 +802,18 @@ namespace PaintLike.Teddy
                 }
             }
 
-            if (_camera.IsInteracting)
+            if (_isRotatingObject3D)
+            {
+                UpdateRotatingObject3D(e.Location);
+            }
+            else if (_camera.IsInteracting)
             {
                 _camera.OnMouseMove(e.Location, _viewportPanel.ClientSize);
                 _viewportPanel.Invalidate();
+            }
+            else if (_isDraggingMesh3D && e.Button == MouseButtons.Left)
+            {
+                UpdateDraggingMesh3D(e.Location);
             }
             else if (_isDrawingStroke && e.Button == MouseButtons.Left)
             {
@@ -718,30 +840,78 @@ namespace PaintLike.Teddy
             }
             else
             {
-                if (_sketchToolMode == Sketch2DToolMode.EraseStroke)
+                TeddyAxisSnapView hoverAxis = TeddyAxisSnapView.None;
+                TeddyAxisDragHandle hoverWorldHandle = TeddyAxisDragHandle.None;
+
+                if (_show3DAxes &&
+                    (_algorithmStepView == TeddyAlgorithmStepView.Final3DModel || _algorithmStepView == TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D))
                 {
-                    _viewportPanel.Cursor = Cursors.NoMove2D;
-                    _viewportPanel.Invalidate();
+                    GetActiveShapeAxesAnchor(out Vector3 hOrigin, out float hRadius, out var hBounds, out Quaternion hRot,
+                        _algorithmStepView == TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D ? ActiveMesh : null);
+                    Quaternion? activeGizmoObjRot = hBounds.HasValue ? hRot : (Quaternion?)null;
+
+                    TeddyRenderer.HitTestCornerAxisGizmo(_viewportPanel.ClientSize, _camera, e.Location, out hoverAxis, out _, activeGizmoObjRot);
+
+                    if (hoverAxis == TeddyAxisSnapView.None && _algorithmStepView == TeddyAlgorithmStepView.Final3DModel && HasVisibleMeshes() && hBounds.HasValue)
+                    {
+                        TeddyRenderer.HitTestWorldAxesGizmo(_viewportPanel.ClientSize, _camera, hOrigin, hRadius, e.Location, out hoverWorldHandle, out _, hRot);
+                    }
+                }
+
+                if (hoverAxis != TeddyAxisSnapView.None)
+                {
+                    _viewportPanel.Cursor = Cursors.Hand;
+                }
+                else if (hoverWorldHandle == TeddyAxisDragHandle.FreeCenterO)
+                {
+                    _viewportPanel.Cursor = Cursors.SizeAll;
+                }
+                else if (hoverWorldHandle != TeddyAxisDragHandle.None)
+                {
+                    _viewportPanel.Cursor = Cursors.Hand;
                 }
                 else
                 {
-                    _viewportPanel.Cursor = Cursors.Cross;
+                    _viewportPanel.Cursor = GetDefaultModeCursor();
+                }
+
+                if (hoverAxis != _hoveredGizmoAxis || hoverWorldHandle != _hoveredWorldAxisHandle)
+                {
+                    _hoveredGizmoAxis = hoverAxis;
+                    _hoveredWorldAxisHandle = hoverWorldHandle;
+                    _viewportPanel.Invalidate();
+                }
+                else if (_sketchToolMode == Sketch2DToolMode.EraseStroke)
+                {
+                    _viewportPanel.Invalidate();
                 }
             }
         }
 
         private void ViewportPanel_MouseUp(object? sender, MouseEventArgs e)
         {
+            if (_isRotatingObject3D)
+            {
+                FinishRotatingObject3D();
+                return;
+            }
+
             if (_camera.IsInteracting)
             {
                 _camera.StopInteraction();
-                _viewportPanel.Cursor = _sketchToolMode == Sketch2DToolMode.EraseStroke ? Cursors.NoMove2D : Cursors.Cross;
+                _viewportPanel.Cursor = GetDefaultModeCursor();
 
                 if (e.Button == MouseButtons.Left && !_hasMovedSignificantly)
                 {
                     HandleViewportClick(e.Location);
                     _viewportPanel.Invalidate();
                 }
+                return;
+            }
+
+            if (e.Button == MouseButtons.Left && _isDraggingMesh3D)
+            {
+                FinishDraggingMesh3D(e.Location);
                 return;
             }
 
@@ -781,6 +951,11 @@ namespace PaintLike.Teddy
                     if (added != null)
                     {
                         _selectedSurfaceLine = null;
+                        // Nếu vẽ nét tự do mới ở vùng trống bên ngoài khối đang chọn -> hủy chọn khối cũ để trục 3D đi theo nét mới!
+                        if (added.CutPattern == TeddyCutPattern.Freehand && _selectedMesh != null && !StrokeHitsMesh(_activeStroke, _selectedMesh))
+                        {
+                            _selectedMesh = null;
+                        }
                         UpdateDeleteButtonState();
 
                         if (added.IsSelfIntersecting)
@@ -903,6 +1078,7 @@ namespace PaintLike.Teddy
             {
                 foreach (var c in consumed) ConsumeSketchStroke(c);
                 SetAlgorithmStepView(TeddyAlgorithmStepView.Final3DModel);
+                SyncCameraPivotToActiveShape();
                 UpdateDeleteButtonState();
                 UpdateStatus($"Đã tạo {createdCount} khối 3D thành công: {lastMsg}");
                 _viewportPanel.Invalidate();
@@ -1183,11 +1359,27 @@ namespace PaintLike.Teddy
             }
 
             TeddyMesh? preferred = PickTargetMeshForStroke(cutRawStroke);
-            var candidates = new List<TeddyMesh>();
-            if (preferred != null && !preferred.IsEmpty && !(preferred.IsCutOffPiece && _cutPieceVisibility == TeddyCutPieceVisibility.Hidden))
-                candidates.Add(preferred);
-            foreach (var m in _sceneMeshes.Where(m => !m.IsEmpty && !m.IsCutOffPiece && m != preferred).OrderByDescending(m => GetMeshAverageViewZ(m)))
-                candidates.Add(m);
+            if (preferred == null) return;
+
+            var visibleMeshes = _sceneMeshes
+                .Where(m => !m.IsEmpty && !(m.IsCutOffPiece && _cutPieceVisibility == TeddyCutPieceVisibility.Hidden))
+                .ToList();
+
+            List<TeddyMesh> candidates;
+            if (usedSketch)
+            {
+                var uniformHitTestPts = StrokeProcessor.ResampleUniform(cutRawStroke, 10f, false);
+                candidates = visibleMeshes
+                    .Where(m => m.GroupId == preferred.GroupId || StrokeHitsMesh(uniformHitTestPts, m))
+                    .OrderByDescending(m => m == preferred)
+                    .ThenByDescending(m => GetMeshAverageViewZ(m))
+                    .ToList();
+                if (candidates.Count == 0) candidates.Add(preferred);
+            }
+            else
+            {
+                candidates = GetMeshGroup(preferred);
+            }
 
             if (candidates.Count == 0) return;
 
@@ -1231,8 +1423,9 @@ namespace PaintLike.Teddy
                 {
                     ConsumeSketchStroke(sketch);
                 }
-                _selectedMesh = null;
+                _selectedMesh = preferred;
                 _selectedSurfaceLine = null;
+                SyncCameraPivotToActiveShape();
                 UpdateDeleteButtonState();
                 UpdateStatus(lastMsg);
                 _viewportPanel.Invalidate();
@@ -1377,6 +1570,14 @@ namespace PaintLike.Teddy
                     ActiveMesh,
                     _camera,
                     _algorithmStepView);
+
+                if (_show3DAxes && _algorithmStepView == TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D)
+                {
+                    GetActiveShapeAxesAnchor(out Vector3 stepOrigin, out float stepRadius, out var stepBounds, out Quaternion stepRot, ActiveMesh);
+                    TeddyRenderer.DrawWorldCoordinateAxes3D(e.Graphics, _viewportPanel.ClientSize, _camera, isOverlayOnMesh: false, stepOrigin, stepRadius, stepBounds, TeddyAxisDragHandle.None, stepRot);
+                    TeddyRenderer.DrawWorldCoordinateAxes3D(e.Graphics, _viewportPanel.ClientSize, _camera, isOverlayOnMesh: true, stepOrigin, stepRadius, stepBounds, TeddyAxisDragHandle.None, stepRot);
+                    TeddyRenderer.DrawCornerAxisGizmo3D(e.Graphics, _viewportPanel.ClientSize, _camera, _currentMousePos, _isMouseInViewport, out _hoveredGizmoAxis, stepBounds.HasValue ? stepRot : (Quaternion?)null);
+                }
             }
             else
             {
@@ -1429,6 +1630,42 @@ namespace PaintLike.Teddy
                     {
                         DrawSelectedMesh3DBoundingBox(e.Graphics, _viewportPanel.ClientSize, _selectedMesh);
                     }
+                }
+
+                if (_show3DAxes)
+                {
+                    GetActiveShapeAxesAnchor(out Vector3 axesOrigin, out float axesRadius, out var axesBounds, out Quaternion axesRot);
+                    TeddyAxisDragHandle activeHighlight = _isDraggingMesh3D ? _activeAxisDragHandle : _hoveredWorldAxisHandle;
+
+                    // Vẽ hệ trục 3D thu gọn riêng cho từng hình khác (không phải hình/nhóm đang chọn)
+                    if (visibleMeshes.Count > 0)
+                    {
+                        var activeGroup = axesBounds.HasValue ? GetMeshGroup(_selectedMesh ?? ActiveMesh) : new List<TeddyMesh>();
+                        Guid? activeGroupId = activeGroup.Count > 0 ? activeGroup[0].GroupId : (Guid?)null;
+
+                        foreach (var grp in visibleMeshes.GroupBy(m => m.GroupId))
+                        {
+                            if (activeGroupId.HasValue && grp.Key == activeGroupId.Value) continue;
+                            var grpList = grp.ToList();
+                            if (ComputeMeshesBounds(grpList, out Vector3 oMin, out Vector3 oMax))
+                            {
+                                Vector3 oOrigin = (oMin + oMax) * 0.5f;
+                                Vector3 oExt = (oMax - oMin) * 0.5f;
+                                float oRadius = Math.Clamp(MathF.Max(oExt.X, MathF.Max(oExt.Y, oExt.Z)), 80f, 340f);
+                                TeddyRenderer.DrawWorldCoordinateAxes3D(
+                                    e.Graphics, _viewportPanel.ClientSize, _camera,
+                                    isOverlayOnMesh: true,
+                                    oOrigin, oRadius, (oMin, oMax),
+                                    TeddyAxisDragHandle.None, grpList[0].LocalRotation,
+                                    isCompactSecondary: true);
+                            }
+                        }
+                    }
+
+                    // Vẽ hệ trục 3D đầy đủ cho hình đang chọn / đang phác thảo
+                    TeddyRenderer.DrawWorldCoordinateAxes3D(e.Graphics, _viewportPanel.ClientSize, _camera, isOverlayOnMesh: false, axesOrigin, axesRadius, axesBounds, TeddyAxisDragHandle.None, axesRot);
+                    TeddyRenderer.DrawWorldCoordinateAxes3D(e.Graphics, _viewportPanel.ClientSize, _camera, isOverlayOnMesh: true, axesOrigin, axesRadius, axesBounds, activeHighlight, axesRot);
+                    TeddyRenderer.DrawCornerAxisGizmo3D(e.Graphics, _viewportPanel.ClientSize, _camera, _currentMousePos, _isMouseInViewport, out _hoveredGizmoAxis, axesBounds.HasValue ? axesRot : (Quaternion?)null);
                 }
             }
 
@@ -1540,6 +1777,511 @@ namespace PaintLike.Teddy
             _viewportPanel.Invalidate();
         }
 
+        private void Toggle3DAxes()
+        {
+            _show3DAxes = !_show3DAxes;
+            UITheme.SetButtonSelected(_btnToggle3DAxes, _show3DAxes);
+            if (!_show3DAxes)
+            {
+                _hoveredGizmoAxis = TeddyAxisSnapView.None;
+                _hoveredWorldAxisHandle = TeddyAxisDragHandle.None;
+            }
+            UpdateStatus(_show3DAxes
+                ? "Đang HIỆN Hệ Trục Tọa Độ 3D (X: Đỏ, Y: Xanh lá, Z: Xanh dương) & La bàn Trục 3D."
+                : "Đã ẨN Hệ Trục Tọa Độ 3D Oxyz. Bấm lại [Trục 3D] hoặc phím [A] để bật lại.");
+            _viewportPanel.Invalidate();
+        }
+
+        private void SnapCameraToAxisView(TeddyAxisSnapView snapView)
+        {
+            Quaternion targetViewRot;
+            string desc;
+            switch (snapView)
+            {
+                case TeddyAxisSnapView.PosX:
+                    targetViewRot = Quaternion.CreateFromAxisAngle(Vector3.UnitY, -MathF.PI * 0.5f);
+                    desc = "trục +X (Nhìn từ Cạnh Phải — thấy mặt phẳng YZ)";
+                    break;
+                case TeddyAxisSnapView.NegX:
+                    targetViewRot = Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI * 0.5f);
+                    desc = "trục -X (Nhìn từ Cạnh Trái — thấy mặt phẳng YZ)";
+                    break;
+                case TeddyAxisSnapView.PosY:
+                    targetViewRot = Quaternion.CreateFromAxisAngle(Vector3.UnitX, MathF.PI * 0.5f);
+                    desc = "trục +Y (Nhìn từ Trên xuống — thấy mặt phẳng XZ)";
+                    break;
+                case TeddyAxisSnapView.NegY:
+                    targetViewRot = Quaternion.CreateFromAxisAngle(Vector3.UnitX, -MathF.PI * 0.5f);
+                    desc = "trục -Y (Nhìn từ Dưới lên — thấy mặt phẳng XZ)";
+                    break;
+                case TeddyAxisSnapView.PosZ:
+                    targetViewRot = Quaternion.Identity;
+                    desc = "trục +Z (Nhìn Chính Diện — thấy mặt phẳng XY)";
+                    break;
+                case TeddyAxisSnapView.NegZ:
+                    targetViewRot = Quaternion.CreateFromAxisAngle(Vector3.UnitY, MathF.PI);
+                    desc = "trục -Z (Nhìn từ Phía Sau — thấy mặt phẳng XY)";
+                    break;
+                case TeddyAxisSnapView.Isometric:
+                    targetViewRot = Quaternion.CreateFromYawPitchRoll(-0.55f, 0.38f, 0f);
+                    desc = "góc Phối Cảnh 3D Isometric (thấy rõ cả 3 trục +X, +Y, +Z)";
+                    break;
+                default:
+                    return;
+            }
+
+            if (_algorithmStepView == TeddyAlgorithmStepView.Final3DModel && HasVisibleMeshes())
+            {
+                var targetGroup = GetMeshGroup(_selectedMesh ?? ActiveMesh);
+                if (targetGroup.Count > 0 && ComputeMeshesBounds(targetGroup, out Vector3 gMin, out Vector3 gMax))
+                {
+                    Vector3 pivot = (gMin + gMax) * 0.5f;
+                    Quaternion targetLocalRot = Quaternion.Normalize(Quaternion.Conjugate(_camera.Rotation) * targetViewRot);
+                    PushUndoState();
+                    foreach (var m in targetGroup)
+                    {
+                        m.SetLocalRotationAroundPivot(targetLocalRot, pivot);
+                    }
+                    SyncCameraPivotToActiveShape();
+                    UpdateStatus($"Đã xoay độc lập hình đang chọn nhìn theo {desc} (hình khác đứng yên).");
+                    _viewportPanel.Invalidate();
+                    return;
+                }
+            }
+
+            SyncCameraPivotToActiveShape();
+            _camera.Rotation = targetViewRot;
+            UpdateStatus($"Đã xoay Camera nhìn theo {desc}.");
+            _viewportPanel.Invalidate();
+        }
+
+        private void ResetActiveRotationAndCamera()
+        {
+            if (_algorithmStepView == TeddyAlgorithmStepView.Final3DModel && HasVisibleMeshes())
+            {
+                int groupCount = _sceneMeshes
+                    .Where(m => !m.IsEmpty && !(m.IsCutOffPiece && _cutPieceVisibility == TeddyCutPieceVisibility.Hidden))
+                    .Select(m => m.GroupId)
+                    .Distinct()
+                    .Count();
+
+                var targetGroup = GetMeshGroup(_selectedMesh ?? ActiveMesh);
+                if (targetGroup.Count > 0 && ComputeMeshesBounds(targetGroup, out Vector3 gMin, out Vector3 gMax))
+                {
+                    Vector3 pivot = (gMin + gMax) * 0.5f;
+                    PushUndoState();
+
+                    if (groupCount > 1)
+                    {
+                        Quaternion uprightLocal = Quaternion.Normalize(Quaternion.Conjugate(_camera.Rotation));
+                        foreach (var m in targetGroup)
+                        {
+                            m.SetLocalRotationAroundPivot(uprightLocal, pivot);
+                        }
+                        SyncCameraPivotToActiveShape();
+                        UpdateStatus("Đã đưa hướng trục hình đang chọn về mặc định (các hình khác đứng yên).");
+                        _viewportPanel.Invalidate();
+                        return;
+                    }
+
+                    foreach (var m in targetGroup)
+                    {
+                        m.SetLocalRotationAroundPivot(Quaternion.Identity, pivot);
+                    }
+                }
+            }
+
+            _camera.Reset();
+            SyncCameraPivotToActiveShape();
+            UpdateStatus("Đã đưa hướng trục hình đang chọn & góc nhìn Camera về mặc định.");
+            _viewportPanel.Invalidate();
+        }
+
+        private static bool ComputeMeshesBounds(IEnumerable<TeddyMesh> meshes, out Vector3 min, out Vector3 max)
+        {
+            float minX = float.MaxValue, minY = float.MaxValue, minZ = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue, maxZ = float.MinValue;
+            bool hasVerts = false;
+
+            foreach (var mesh in meshes)
+            {
+                if (mesh == null || mesh.IsEmpty || mesh.Vertices.Count == 0) continue;
+                foreach (var v in mesh.Vertices)
+                {
+                    if (v.X < minX) minX = v.X;
+                    if (v.X > maxX) maxX = v.X;
+                    if (v.Y < minY) minY = v.Y;
+                    if (v.Y > maxY) maxY = v.Y;
+                    if (v.Z < minZ) minZ = v.Z;
+                    if (v.Z > maxZ) maxZ = v.Z;
+                    hasVerts = true;
+                }
+            }
+
+            if (!hasVerts)
+            {
+                min = Vector3.Zero;
+                max = Vector3.Zero;
+                return false;
+            }
+
+            min = new Vector3(minX, minY, minZ);
+            max = new Vector3(maxX, maxY, maxZ);
+            return true;
+        }
+
+        private void SyncCameraPivotToActiveShape()
+        {
+            GetActiveShapeAxesAnchor(out Vector3 anchorOrigin, out _, out _);
+            _camera.SetPivotKeepScreenPosition(anchorOrigin);
+        }
+
+        private bool HasVisibleMeshes()
+        {
+            return _sceneMeshes.Any(m => !m.IsEmpty && !(m.IsCutOffPiece && _cutPieceVisibility == TeddyCutPieceVisibility.Hidden));
+        }
+
+        private bool StrokeHitsMesh(IReadOnlyList<PointF> stroke, TeddyMesh? mesh)
+        {
+            if (mesh == null || mesh.IsEmpty || stroke == null || stroke.Count == 0)
+                return false;
+
+            int step = Math.Max(1, stroke.Count / 12);
+            for (int i = 0; i < stroke.Count; i += step)
+            {
+                if (TeddyRaycaster.RaycastMesh(mesh, stroke[i], _camera, _viewportPanel.ClientSize, out _, out _, out _))
+                    return true;
+            }
+            return TeddyRaycaster.RaycastMesh(mesh, stroke[stroke.Count - 1], _camera, _viewportPanel.ClientSize, out _, out _, out _);
+        }
+
+        private Cursor GetDefaultModeCursor()
+        {
+            return _sketchToolMode switch
+            {
+                Sketch2DToolMode.EraseStroke => Cursors.NoMove2D,
+                Sketch2DToolMode.Move3DMesh => Cursors.SizeAll,
+                _ => Cursors.Cross
+            };
+        }
+
+        private void ToggleMove3DMode()
+        {
+            _sketchToolMode = _sketchToolMode == Sketch2DToolMode.Move3DMesh
+                ? Sketch2DToolMode.DrawStroke
+                : Sketch2DToolMode.Move3DMesh;
+            Update2DToolSelection();
+            UpdateStatus(_sketchToolMode == Sketch2DToolMode.Move3DMesh
+                ? "Đang bật [Di Chuyển 3D]: Kéo Chuột Trái vào khối 3D (hoặc kéo tâm O / trục X, Y, Z) để dời khối sang vị trí mới! (Shift + Kéo để dời tất cả)"
+                : "Đã quay về chế độ [Vẽ 2D]: Kéo Chuột Trái vẽ nét 2D mới, hoặc nắm trực tiếp tâm O / trục X, Y, Z để di chuyển khối.");
+            _viewportPanel.Invalidate();
+        }
+
+        private List<TeddyMesh> GetMeshGroup(TeddyMesh? seedMesh)
+        {
+            var visible = _sceneMeshes
+                .Where(m => !m.IsEmpty && !(m.IsCutOffPiece && _cutPieceVisibility == TeddyCutPieceVisibility.Hidden))
+                .ToList();
+            if (visible.Count == 0) return visible;
+
+            TeddyMesh target = (seedMesh != null && visible.Contains(seedMesh))
+                ? seedMesh
+                : visible[visible.Count - 1];
+
+            return visible.Where(m => m.GroupId == target.GroupId).ToList();
+        }
+
+        private void UpdateRotatingObject3D(Point mousePos)
+        {
+            if (!_isRotatingObject3D || mousePos == _lastRotateMousePos || _rotatingTargetMeshes.Count == 0)
+                return;
+
+            Vector3 sp = _camera.ProjectToScreen(_rotatingPivotWorld, _viewportPanel.ClientSize);
+            PointF centerScreen = new PointF(sp.X, sp.Y);
+            Quaternion deltaViewRot = ComputeTrackballDelta(_lastRotateMousePos, mousePos, centerScreen, _viewportPanel.ClientSize);
+            _lastRotateMousePos = mousePos;
+
+            if (MathF.Abs(deltaViewRot.W) < 0.999999f || deltaViewRot.LengthSquared() > 0f)
+            {
+                Quaternion camRot = _camera.Rotation;
+                Quaternion invCam = Quaternion.Conjugate(camRot);
+                Quaternion deltaWorldRot = Quaternion.Normalize(invCam * deltaViewRot * camRot);
+
+                if (MathF.Abs(deltaWorldRot.W) < 0.99999f)
+                {
+                    _rotateMoved = true;
+                    foreach (var mesh in _rotatingTargetMeshes)
+                    {
+                        mesh.RotateAroundPivot(deltaWorldRot, _rotatingPivotWorld);
+                    }
+                    _viewportPanel.Invalidate();
+                }
+            }
+        }
+
+        private void FinishRotatingObject3D()
+        {
+            bool didRotate = _rotateMoved;
+            _isRotatingObject3D = false;
+            _rotateMoved = false;
+            _rotatingTargetMeshes.Clear();
+            _viewportPanel.Cursor = GetDefaultModeCursor();
+
+            if (!didRotate)
+            {
+                if (_undoStack.Count > 0) _undoStack.Pop();
+            }
+            else
+            {
+                SyncCameraPivotToActiveShape();
+                UpdateStatus("Đã xoay xong hình 3D trên trục riêng (các hình khác giữ nguyên).");
+            }
+
+            _viewportPanel.Invalidate();
+        }
+
+        private static Quaternion ComputeTrackballDelta(Point prevPt, Point currPt, PointF centerScreen, Size viewport)
+        {
+            if (prevPt == currPt) return Quaternion.Identity;
+            float radius = MathF.Max(1f, MathF.Min(viewport.Width, viewport.Height) * 0.425f);
+
+            Vector3 MapPt(Point pt)
+            {
+                float x = (pt.X - centerScreen.X) / radius;
+                float y = (centerScreen.Y - pt.Y) / radius;
+                float d2 = x * x + y * y;
+                float z = d2 <= 0.5f ? MathF.Sqrt(1.0f - d2) : 0.5f / MathF.Sqrt(d2);
+                return Vector3.Normalize(new Vector3(x, y, z));
+            }
+
+            Vector3 v1 = MapPt(prevPt);
+            Vector3 v2 = MapPt(currPt);
+            Vector3 axis = Vector3.Cross(v1, v2);
+            float axisLen = axis.Length();
+            if (axisLen <= 1e-5f) return Quaternion.Identity;
+
+            axis /= axisLen;
+            float dot = Math.Clamp(Vector3.Dot(v1, v2), -1.0f, 1.0f);
+            float angle = MathF.Acos(dot) * 1.85f;
+            return Quaternion.CreateFromAxisAngle(axis, angle);
+        }
+
+        private void StartDraggingMesh3D(TeddyAxisDragHandle handle, Vector3 axisDir, Point mousePos, TeddyMesh? explicitSingleMesh = null)
+        {
+            _draggingTargetMeshes.Clear();
+            bool moveAllVisible = Control.ModifierKeys.HasFlag(Keys.Shift);
+
+            if (moveAllVisible)
+            {
+                foreach (var m in _sceneMeshes)
+                {
+                    if (!m.IsEmpty && !(m.IsCutOffPiece && _cutPieceVisibility == TeddyCutPieceVisibility.Hidden))
+                        _draggingTargetMeshes.Add(m);
+                }
+            }
+            else if (explicitSingleMesh != null && !explicitSingleMesh.IsEmpty)
+            {
+                _draggingTargetMeshes.Add(explicitSingleMesh);
+            }
+            else
+            {
+                _draggingTargetMeshes.AddRange(GetMeshGroup(_selectedMesh ?? ActiveMesh));
+            }
+
+            if (_draggingTargetMeshes.Count == 0)
+                return;
+
+            PushUndoState();
+            _isDraggingMesh3D = true;
+            _dragMoved = false;
+            _activeAxisDragHandle = handle;
+            _dragAxisWorldDir = axisDir;
+            _lastDragMousePos = mousePos;
+            _viewportPanel.Cursor = Cursors.SizeAll;
+
+            string axisLabel = handle switch
+            {
+                TeddyAxisDragHandle.AxisX => "dọc trục X (Đỏ)",
+                TeddyAxisDragHandle.AxisY => "dọc trục Y (Xanh lá)",
+                TeddyAxisDragHandle.AxisZ => "dọc trục Z (Xanh dương)",
+                _ => "tự do theo mặt phẳng màn hình"
+            };
+            UpdateStatus($"Đang kéo di chuyển khối 3D {axisLabel}...");
+            _viewportPanel.Invalidate();
+        }
+
+        private void UpdateDraggingMesh3D(Point mousePos)
+        {
+            float dx = mousePos.X - _lastDragMousePos.X;
+            float dy = mousePos.Y - _lastDragMousePos.Y;
+            _lastDragMousePos = mousePos;
+
+            if (MathF.Abs(dx) < 0.01f && MathF.Abs(dy) < 0.01f)
+                return;
+
+            Vector3 deltaWorld = Vector3.Zero;
+            if (_activeAxisDragHandle == TeddyAxisDragHandle.FreeCenterO)
+            {
+                float dvx = dx / _camera.Zoom;
+                float dvy = -dy / _camera.Zoom;
+                deltaWorld = Vector3.Transform(new Vector3(dvx, dvy, 0f), Quaternion.Conjugate(_camera.Rotation));
+            }
+            else
+            {
+                Vector3 viewAxis = _camera.NormalToView(_dragAxisWorldDir);
+                Vector2 screenAxis = new Vector2(viewAxis.X * _camera.Zoom, -viewAxis.Y * _camera.Zoom);
+                float lenSq = screenAxis.LengthSquared();
+                if (lenSq >= 1e-4f)
+                {
+                    float t = Vector2.Dot(new Vector2(dx, dy), screenAxis) / lenSq;
+                    deltaWorld = _dragAxisWorldDir * t;
+                }
+            }
+
+            if (deltaWorld.LengthSquared() > 1e-7f)
+            {
+                _dragMoved = true;
+                foreach (var mesh in _draggingTargetMeshes)
+                {
+                    mesh.Translate(deltaWorld);
+                }
+
+                SyncCameraPivotToActiveShape();
+                Vector3 p = _camera.PivotWorld;
+                UpdateStatus($"Đang di chuyển khối 3D → Tọa độ mới: O({(int)MathF.Round(p.X)}, {(int)MathF.Round(p.Y)}, {(int)MathF.Round(p.Z)})");
+                _viewportPanel.Invalidate();
+            }
+        }
+
+        private void FinishDraggingMesh3D(Point mousePos)
+        {
+            bool didMove = _dragMoved;
+            var handle = _activeAxisDragHandle;
+
+            _isDraggingMesh3D = false;
+            _dragMoved = false;
+            _activeAxisDragHandle = TeddyAxisDragHandle.None;
+            _draggingTargetMeshes.Clear();
+            _viewportPanel.Cursor = GetDefaultModeCursor();
+
+            if (!didMove)
+            {
+                if (_undoStack.Count > 0) _undoStack.Pop();
+                if (handle == TeddyAxisDragHandle.FreeCenterO && !_hasMovedSignificantly && _sketchToolMode == Sketch2DToolMode.Move3DMesh)
+                {
+                    HandleViewportClick(mousePos);
+                }
+            }
+            else
+            {
+                SyncCameraPivotToActiveShape();
+                Vector3 p = _camera.PivotWorld;
+                UpdateStatus($"Đã di chuyển khối 3D sang vị trí mới: O({(int)MathF.Round(p.X)}, {(int)MathF.Round(p.Y)}, {(int)MathF.Round(p.Z)}). Chuột Phải để xoay quanh tâm mới!");
+            }
+
+            _viewportPanel.Invalidate();
+        }
+
+        private void GetActiveShapeAxesAnchor(
+            out Vector3 originWorld,
+            out float referenceRadius,
+            out (Vector3 Min, Vector3 Max)? meshBounds3D,
+            TeddyMesh? overrideMesh = null)
+        {
+            GetActiveShapeAxesAnchor(out originWorld, out referenceRadius, out meshBounds3D, out _, overrideMesh);
+        }
+
+        private void GetActiveShapeAxesAnchor(
+            out Vector3 originWorld,
+            out float referenceRadius,
+            out (Vector3 Min, Vector3 Max)? meshBounds3D,
+            out Quaternion localRotation,
+            TeddyMesh? overrideMesh = null)
+        {
+            // Ưu tiên 1: Nếu đang kéo vẽ nét 2D mới hoặc vừa vẽ/chọn nét 2D ở tọa độ mới -> bám ngay theo nét 2D mới!
+            IReadOnlyList<PointF>? activeOrSelectedStroke2D = null;
+            if (overrideMesh == null && !_isDraggingMesh3D && !_isRotatingObject3D)
+            {
+                if (_isDrawingStroke && _sketchToolMode == Sketch2DToolMode.DrawStroke && _activeStroke.Count >= 2)
+                {
+                    activeOrSelectedStroke2D = _activeStroke;
+                }
+                else if (_sketchLayer.SelectedStroke != null && _selectedMesh == null && _sketchLayer.SelectedStroke.Points.Count >= 2)
+                {
+                    activeOrSelectedStroke2D = _sketchLayer.SelectedStroke.Points;
+                }
+            }
+
+            if (activeOrSelectedStroke2D != null && TryComputeStroke2DAxesAnchor(activeOrSelectedStroke2D, out originWorld, out referenceRadius))
+            {
+                meshBounds3D = null;
+                localRotation = Quaternion.Identity;
+                return;
+            }
+
+            // Ưu tiên 2: Bám theo tâm & hướng trục riêng của NHÓM hình 3D đang chọn (tuyệt đối không gộp 2 hình khác nhau!)
+            List<TeddyMesh>? targetMeshes = null;
+            if (overrideMesh != null && !overrideMesh.IsEmpty)
+            {
+                targetMeshes = new List<TeddyMesh> { overrideMesh };
+            }
+            else if (HasVisibleMeshes())
+            {
+                targetMeshes = GetMeshGroup(_selectedMesh ?? ActiveMesh);
+            }
+
+            if (targetMeshes != null && targetMeshes.Count > 0 && ComputeMeshesBounds(targetMeshes, out Vector3 mMin, out Vector3 mMax))
+            {
+                originWorld = (mMin + mMax) * 0.5f;
+                Vector3 extents = (mMax - mMin) * 0.5f;
+                referenceRadius = Math.Clamp(MathF.Max(extents.X, MathF.Max(extents.Y, extents.Z)), 80f, 340f);
+                meshBounds3D = (mMin, mMax);
+                localRotation = targetMeshes[0].LocalRotation;
+                return;
+            }
+
+            // Ưu tiên 3: Nét 2D bất kỳ còn lại trong lớp phác thảo
+            if (_sketchLayer.HasStrokes)
+            {
+                var targetStroke = _sketchLayer.SelectedStroke ?? _sketchLayer.Strokes[_sketchLayer.Strokes.Count - 1];
+                if (targetStroke.Points.Count >= 2 && TryComputeStroke2DAxesAnchor(targetStroke.Points, out originWorld, out referenceRadius))
+                {
+                    meshBounds3D = null;
+                    localRotation = Quaternion.Identity;
+                    return;
+                }
+            }
+
+            // Mặc định không gian trống tại gốc (0, 0, 0)
+            originWorld = Vector3.Zero;
+            referenceRadius = 135f;
+            meshBounds3D = null;
+            localRotation = Quaternion.Identity;
+        }
+
+        private bool TryComputeStroke2DAxesAnchor(IReadOnlyList<PointF> stroke2D, out Vector3 originWorld, out float referenceRadius)
+        {
+            originWorld = Vector3.Zero;
+            referenceRadius = 135f;
+            if (stroke2D == null || stroke2D.Count < 2) return false;
+
+            float minX = float.MaxValue, minY = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue;
+            foreach (var p in stroke2D)
+            {
+                if (p.X < minX) minX = p.X;
+                if (p.Y < minY) minY = p.Y;
+                if (p.X > maxX) maxX = p.X;
+                if (p.Y > maxY) maxY = p.Y;
+            }
+
+            PointF center2D = new PointF((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
+            originWorld = _camera.ScreenToWorldPoint(center2D, _viewportPanel.ClientSize, 0f);
+            float r2D = MathF.Max(maxX - minX, maxY - minY) * 0.5f / MathF.Max(0.35f, _camera.Zoom);
+            referenceRadius = Math.Clamp(r2D, 85f, 320f);
+            return true;
+        }
+
         private void UpdateStyleButtonSelection()
         {
             UITheme.SetButtonSelected(_btnStylePenInk, _renderStyle == TeddyRenderStyle.PenAndInk);
@@ -1551,9 +2293,13 @@ namespace PaintLike.Teddy
         {
             UITheme.SetButtonSelected(_btnToolDraw2D, _sketchToolMode == Sketch2DToolMode.DrawStroke);
             UITheme.SetButtonSelected(_btnToolErase2D, _sketchToolMode == Sketch2DToolMode.EraseStroke);
+            if (_btnToolMove3D != null)
+            {
+                UITheme.SetButtonSelected(_btnToolMove3D, _sketchToolMode == Sketch2DToolMode.Move3DMesh);
+            }
             if (_viewportPanel != null)
             {
-                _viewportPanel.Cursor = _sketchToolMode == Sketch2DToolMode.EraseStroke ? Cursors.NoMove2D : Cursors.Cross;
+                _viewportPanel.Cursor = GetDefaultModeCursor();
             }
         }
 
@@ -1585,6 +2331,11 @@ namespace PaintLike.Teddy
             {
                 _lblModeBadge.Text = "2D ERASER MODE";
                 _lblModeBadge.BackColor = UITheme.AccentDanger;
+            }
+            else if (_sketchToolMode == Sketch2DToolMode.Move3DMesh || _isDraggingMesh3D)
+            {
+                _lblModeBadge.Text = "3D MOVE MODE";
+                _lblModeBadge.BackColor = UITheme.AccentSuccess;
             }
             else if (_activeCutPattern != TeddyCutPattern.Freehand)
             {
@@ -1652,6 +2403,7 @@ namespace PaintLike.Teddy
             if (_undoStack.Count == 0) return;
             _redoStack.Push(CaptureHistoryState());
             ApplyHistoryState(_undoStack.Pop());
+            SyncCameraPivotToActiveShape();
             UpdateStatus("Đã hoàn tác thao tác trước đó.");
             _viewportPanel.Invalidate();
         }
@@ -1661,6 +2413,7 @@ namespace PaintLike.Teddy
             if (_redoStack.Count == 0) return;
             _undoStack.Push(CaptureHistoryState());
             ApplyHistoryState(_redoStack.Pop());
+            SyncCameraPivotToActiveShape();
             UpdateStatus("Đã làm lại thao tác vừa hoàn tác.");
             _viewportPanel.Invalidate();
         }
@@ -1690,15 +2443,24 @@ namespace PaintLike.Teddy
                 ApplyFillRegionFromSketch();
                 return true;
             }
+            if (keyData == Keys.A)
+            {
+                Toggle3DAxes();
+                return true;
+            }
+            if (keyData == Keys.M)
+            {
+                ToggleMove3DMode();
+                return true;
+            }
             if (keyData == Keys.Space)
             {
-                _camera.Reset();
-                _viewportPanel.Invalidate();
+                ResetActiveRotationAndCamera();
                 return true;
             }
             if (keyData == Keys.Escape)
             {
-                if (_sketchToolMode == Sketch2DToolMode.EraseStroke)
+                if (_sketchToolMode == Sketch2DToolMode.EraseStroke || _sketchToolMode == Sketch2DToolMode.Move3DMesh)
                 {
                     _sketchToolMode = Sketch2DToolMode.DrawStroke;
                     Update2DToolSelection();
@@ -1815,6 +2577,7 @@ namespace PaintLike.Teddy
                 _sketchLayer.SelectedStroke = hit2D;
                 _selectedSurfaceLine = null;
                 _selectedMesh = null;
+                SyncCameraPivotToActiveShape();
                 UpdateDeleteButtonState();
                 UpdateStatus($"Đã chọn {hit2D.Label} trên lớp 2D. Bấm Delete để xóa hoặc bấm nút chức năng 3D ở trên để áp dụng!");
                 _viewportPanel.Invalidate();
@@ -1835,6 +2598,7 @@ namespace PaintLike.Teddy
                     _sketchLayer.SelectedStroke = null;
                     _selectedMesh = underMesh;
                     _selectedSurfaceLine = null;
+                    SyncCameraPivotToActiveShape();
                     UpdateDeleteButtonState();
                     UpdateStatus($"Đã chọn Khối 3D ({underMesh!.Vertices.Count} đỉnh). Bấm Delete để xóa hoặc đổi màu khối.");
                     _viewportPanel.Invalidate();
@@ -1856,6 +2620,7 @@ namespace PaintLike.Teddy
                 _sketchLayer.SelectedStroke = null;
                 _selectedMesh = hitMesh;
                 _selectedSurfaceLine = null;
+                SyncCameraPivotToActiveShape();
                 UpdateDeleteButtonState();
                 UpdateStatus($"Đã chọn Khối 3D ({hitMesh!.Vertices.Count} đỉnh). Bấm Delete để xóa hoặc đổi màu khối.");
                 _viewportPanel.Invalidate();
@@ -2044,18 +2809,9 @@ namespace PaintLike.Teddy
         {
             if (mesh == null || mesh.IsEmpty || mesh.Vertices.Count == 0) return;
 
-            float minX = float.MaxValue, minY = float.MaxValue, minZ = float.MaxValue;
-            float maxX = float.MinValue, maxY = float.MinValue, maxZ = float.MinValue;
-
-            foreach (var v in mesh.Vertices)
-            {
-                if (v.X < minX) minX = v.X;
-                if (v.X > maxX) maxX = v.X;
-                if (v.Y < minY) minY = v.Y;
-                if (v.Y > maxY) maxY = v.Y;
-                if (v.Z < minZ) minZ = v.Z;
-                if (v.Z > maxZ) maxZ = v.Z;
-            }
+            if (!ComputeMeshesBounds(new[] { mesh }, out Vector3 min, out Vector3 max)) return;
+            float minX = min.X, minY = min.Y, minZ = min.Z;
+            float maxX = max.X, maxY = max.Y, maxZ = max.Z;
 
             Vector3[] corners3D = new Vector3[8]
             {

@@ -15,6 +15,8 @@ namespace PaintLike.Teddy
         public Quaternion Rotation { get; set; } = Quaternion.Identity;
         public float Zoom { get; set; } = 1.0f;
         public Vector2 PanOffset { get; set; } = Vector2.Zero;
+        public Vector3 PivotWorld { get; private set; } = Vector3.Zero;
+        public Vector3 PivotView { get; private set; } = Vector3.Zero;
 
         private Point _lastMousePos;
         private bool _isRotating = false;
@@ -29,6 +31,14 @@ namespace PaintLike.Teddy
             Rotation = Quaternion.Identity;
             Zoom = 1.0f;
             PanOffset = Vector2.Zero;
+            PivotWorld = Vector3.Zero;
+            PivotView = Vector3.Zero;
+        }
+
+        public void SetPivotKeepScreenPosition(Vector3 newPivotWorld)
+        {
+            PivotView = WorldToView(newPivotWorld);
+            PivotWorld = newPivotWorld;
         }
 
         public void StartRotate(Point mousePos)
@@ -118,11 +128,20 @@ namespace PaintLike.Teddy
         }
 
         /// <summary>
-        /// Biến đổi một đỉnh 3D từ không gian vật thể (Model Space) sang không gian Camera (View Space).
+        /// Biến đổi một đỉnh 3D từ không gian vật thể (Model Space) sang không gian Camera (View Space) xoay quanh PivotWorld.
         /// </summary>
         public Vector3 WorldToView(Vector3 worldPos)
         {
-            return Vector3.Transform(worldPos, Rotation);
+            return Vector3.Transform(worldPos - PivotWorld, Rotation) + PivotView;
+        }
+
+        /// <summary>
+        /// Biến đổi ngược một điểm từ không gian Camera (View Space) về không gian vật thể (Model Space).
+        /// </summary>
+        public Vector3 ViewToWorld(Vector3 viewPos)
+        {
+            Quaternion invRot = Quaternion.Conjugate(Rotation);
+            return Vector3.Transform(viewPos - PivotView, invRot) + PivotWorld;
         }
 
         /// <summary>
@@ -150,7 +169,7 @@ namespace PaintLike.Teddy
         }
 
         /// <summary>
-        /// Chuyển đổi một điểm màn hình 2D thành điểm trên mặt phẳng đi qua tâm vật thể (Z_view = depth).
+        /// Chuyển đổi một điểm màn hình 2D thành điểm trên mặt phẳng đi qua tâm xoay (Z_view = depth).
         /// Dùng khi khởi tạo vật thể 3D từ nét vẽ 2D hoặc chiếu nét đùn.
         /// </summary>
         public Vector3 ScreenToWorldPoint(PointF screenPt, Size viewport, float viewDepth = 0f)
@@ -160,10 +179,7 @@ namespace PaintLike.Teddy
 
             float vx = (screenPt.X - cx) / Zoom;
             float vy = (cy - screenPt.Y) / Zoom;
-            Vector3 viewPt = new Vector3(vx, vy, viewDepth);
-
-            Quaternion invRot = Quaternion.Conjugate(Rotation);
-            return Vector3.Transform(viewPt, invRot);
+            return ViewToWorld(new Vector3(vx, vy, viewDepth));
         }
 
         /// <summary>

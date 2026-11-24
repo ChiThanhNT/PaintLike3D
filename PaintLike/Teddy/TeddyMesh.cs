@@ -139,6 +139,10 @@ namespace PaintLike.Teddy
         // Dữ liệu trực quan hóa từng bước thuật toán Mục 5.1 (Hình 13, 14, 15)
         public TeddyAlgorithmDebugInfo? DebugInfo { get; set; } = null;
 
+        // Định danh nhóm khối (mảnh cắt/đùn gắn với cùng vật thể gốc) & hướng trục riêng của hình 3D
+        public Guid GroupId { get; set; } = Guid.NewGuid();
+        public Quaternion LocalRotation { get; set; } = Quaternion.Identity;
+
         // Màu sắc chủ đạo của mô hình
         public Color BaseColor { get; set; } = Color.FromArgb(244, 162, 97); // Warm clay / plush orange
 
@@ -163,6 +167,8 @@ namespace PaintLike.Teddy
         {
             TeddyMesh copy = new TeddyMesh
             {
+                GroupId = this.GroupId,
+                LocalRotation = this.LocalRotation,
                 BaseColor = this.BaseColor,
                 IsCutOffPiece = this.IsCutOffPiece
             };
@@ -357,6 +363,94 @@ namespace PaintLike.Teddy
         private static void AddUniqueNeighbor(List<int> list, int v)
         {
             if (!list.Contains(v)) list.Add(v);
+        }
+
+        /// <summary>
+        /// Tịnh tiến toàn bộ hình khối 3D (đỉnh, spine, nét bề mặt, đường cắt và dữ liệu minh họa) sang vị trí tọa độ mới.
+        /// </summary>
+        public void Translate(Vector3 deltaWorld)
+        {
+            if (deltaWorld.LengthSquared() < 1e-9f) return;
+
+            TransformAllPositions(p => p + deltaWorld);
+            if (DebugInfo != null)
+            {
+                DebugInfo.TranslationOffset3D += deltaWorld;
+            }
+        }
+
+        /// <summary>
+        /// Xoay độc lập hình khối 3D này quanh tâm pivotWorld và cập nhật hướng trục riêng LocalRotation.
+        /// </summary>
+        public void RotateAroundPivot(Quaternion deltaWorldRot, Vector3 pivotWorld)
+        {
+            Quaternion normDelta = Quaternion.Normalize(deltaWorldRot);
+            LocalRotation = Quaternion.Normalize(normDelta * LocalRotation);
+
+            TransformAllPositions(p => pivotWorld + Vector3.Transform(p - pivotWorld, normDelta));
+            RecalculateNormals();
+        }
+
+        /// <summary>
+        /// Đưa hướng trục riêng LocalRotation của khối 3D về góc targetLocalRot quanh tâm pivotWorld.
+        /// </summary>
+        public void SetLocalRotationAroundPivot(Quaternion targetLocalRot, Vector3 pivotWorld)
+        {
+            Quaternion targetNorm = Quaternion.Normalize(targetLocalRot);
+            Quaternion delta = Quaternion.Normalize(targetNorm * Quaternion.Conjugate(LocalRotation));
+            RotateAroundPivot(delta, pivotWorld);
+            LocalRotation = targetNorm;
+        }
+
+        private void TransformAllPositions(Func<Vector3, Vector3> transformPoint)
+        {
+            for (int i = 0; i < Vertices.Count; i++)
+                Vertices[i] = transformPoint(Vertices[i]);
+
+            for (int i = 0; i < SpineVertices.Count; i++)
+                SpineVertices[i] = transformPoint(SpineVertices[i]);
+
+            foreach (var sl in SurfaceLines)
+            {
+                for (int i = 0; i < sl.Points.Count; i++)
+                    sl.Points[i] = transformPoint(sl.Points[i]);
+            }
+
+            foreach (var cr in CutSectionRings)
+            {
+                for (int i = 0; i < cr.Points.Count; i++)
+                    cr.Points[i] = transformPoint(cr.Points[i]);
+            }
+
+            if (ActiveBaseRing != null)
+            {
+                for (int i = 0; i < ActiveBaseRing.Points.Count; i++)
+                    ActiveBaseRing.Points[i] = transformPoint(ActiveBaseRing.Points[i]);
+            }
+
+            if (DebugInfo != null)
+            {
+                for (int i = 0; i < DebugInfo.BoundaryPolygon3D.Count; i++)
+                    DebugInfo.BoundaryPolygon3D[i] = transformPoint(DebugInfo.BoundaryPolygon3D[i]);
+
+                foreach (var rib in DebugInfo.QuarterOvalRibs3D)
+                {
+                    for (int i = 0; i < rib.Length; i++)
+                        rib[i] = transformPoint(rib[i]);
+                }
+
+                for (int i = 0; i < DebugInfo.ElevatedSpineTop3D.Count; i++)
+                {
+                    var seg = DebugInfo.ElevatedSpineTop3D[i];
+                    DebugInfo.ElevatedSpineTop3D[i] = (transformPoint(seg.A), transformPoint(seg.B));
+                }
+
+                for (int i = 0; i < DebugInfo.ElevatedSpineBottom3D.Count; i++)
+                {
+                    var seg = DebugInfo.ElevatedSpineBottom3D[i];
+                    DebugInfo.ElevatedSpineBottom3D[i] = (transformPoint(seg.A), transformPoint(seg.B));
+                }
+            }
         }
 
         // =========================================================================

@@ -105,8 +105,12 @@ namespace PaintLike.Teddy
             {
                 CreationViewRotation = camera.Rotation
             };
+            Quaternion invCreationRot = Quaternion.Conjugate(camera.Rotation);
             for (int i = 0; i < boundaryCount; i++)
+            {
                 debugInfo.BoundaryPolygon2D.Add(vertices2D[i]);
+                debugInfo.BoundaryPolygon3D.Add(Vector3.Transform(new Vector3(vertices2D[i].X, vertices2D[i].Y, 0f), invCreationRot));
+            }
             foreach (var ct in cdtTriangles)
             {
                 var copyTri = new Tri2D(ct.V0, ct.V1, ct.V2) { Category = ct.Category };
@@ -140,6 +144,13 @@ namespace PaintLike.Teddy
             // Bước 5: Tối ưu lưới 3D (Mesh Refinement - Hoppe 1993 [12], Mục 5.1 cuối trang 6)
             TeddyMeshOptimizer.RefineMesh(mesh, 2.2f);
             mesh.DebugInfo = debugInfo;
+
+            // Bù độ lệch tâm xoay động PivotWorld / PivotView để khối 3D & minh họa 5 bước khớp 1:1 với nét 2D
+            Vector3 pivotOffset = camera.PivotWorld - Vector3.Transform(camera.PivotView, Quaternion.Conjugate(camera.Rotation));
+            if (pivotOffset.LengthSquared() > 1e-6f)
+            {
+                mesh.Translate(pivotOffset);
+            }
 
             resultMesh = mesh;
             statusMessage = $"Đã tạo mô hình 3D: {mesh.Vertices.Count} đỉnh, {mesh.Triangles.Count} mặt (CDT: {cdtTriangles.Count} tam giác, Spine: {spineEdges.Count} đoạn).";

@@ -51,7 +51,8 @@ namespace PaintLike
         CutStepped,
         CutChevronV,
         Scissors,
-        SplitMesh
+        SplitMesh,
+        Axes3D
     }
 
     public enum ButtonVariant
@@ -380,8 +381,10 @@ namespace PaintLike
             if (meta.SwatchColorProvider != null)
             {
                 Color swatchColor = meta.SwatchColorProvider();
-                int swatchSize = Math.Min(rect.Height - 10, 18);
-                Rectangle swatchRect = new Rectangle(rect.X + 7, rect.Y + (rect.Height - swatchSize) / 2, swatchSize, swatchSize);
+                int swatchSize = Math.Min(rect.Height - 11, 15);
+                int padLeft = rect.Width <= 72 ? 4 : 7;
+                int gap = rect.Width <= 72 ? 3 : 5;
+                Rectangle swatchRect = new Rectangle(rect.X + padLeft, rect.Y + (rect.Height - swatchSize) / 2, swatchSize, swatchSize);
                 using (GraphicsPath sp = CreateRoundedRect(swatchRect, 4))
                 {
                     using (SolidBrush sb = new SolidBrush(swatchColor))
@@ -390,7 +393,7 @@ namespace PaintLike
                         g.DrawPath(penBorder, sp);
                 }
 
-                Rectangle textRect = new Rectangle(swatchRect.Right + 5, rect.Y, rect.Right - swatchRect.Right - 6, rect.Height);
+                Rectangle textRect = new Rectangle(swatchRect.Right + gap, rect.Y, rect.Right - swatchRect.Right - gap - 2, rect.Height);
                 TextRenderer.DrawText(g, meta.Label, FontSmallBold, textRect, fgColor,
                     TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
                 return;
@@ -428,7 +431,8 @@ namespace PaintLike
                 else
                 {
                     int iconSize = Math.Min(15, rect.Height - 8);
-                    int padLeft = 7;
+                    int padLeft = rect.Width <= 72 ? 4 : 7;
+                    int gap = rect.Width <= 72 ? 2 : 4;
                     Rectangle iconRect = new Rectangle(
                         rect.X + padLeft,
                         rect.Y + (rect.Height - iconSize) / 2,
@@ -436,7 +440,7 @@ namespace PaintLike
                         iconSize);
                     DrawIcon(g, meta.Icon, iconRect, iconColor, 1.7f);
 
-                    Rectangle textRect = new Rectangle(iconRect.Right + 4, rect.Y, rect.Right - iconRect.Right - 5, rect.Height);
+                    Rectangle textRect = new Rectangle(iconRect.Right + gap, rect.Y, rect.Right - iconRect.Right - gap - 2, rect.Height);
                     TextRenderer.DrawText(g, meta.Label, FontSmallBold, textRect, fgColor,
                         TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
                 }
@@ -837,6 +841,34 @@ namespace PaintLike
                             dashSplit.DashPattern = new float[] { 2f, 2f };
                             g.DrawLine(dashSplit, cx, y + 1f, cx, y + h - 1f);
                         }
+                        break;
+
+                    case IconType.Axes3D:
+                        PointF originPt = new PointF(x + w * 0.34f, y + h * 0.64f);
+                        PointF yTip = new PointF(originPt.X, y + 1.5f);
+                        PointF xTip = new PointF(x + w - 1.5f, originPt.Y);
+                        PointF zTip = new PointF(x + 1.5f, y + h - 1.5f);
+                        bool muted = color == TextMuted;
+                        Color xCol = muted ? color : AccentDanger;
+                        Color yCol = muted ? color : AccentSuccess;
+                        Color zCol = muted ? color : Color.FromArgb(37, 99, 235);
+                        using (Pen py = new Pen(yCol, strokeWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                        using (Pen px = new Pen(xCol, strokeWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                        using (Pen pz = new Pen(zCol, strokeWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                        {
+                            g.DrawLine(py, originPt, yTip);
+                            g.DrawLine(py, yTip.X - 2.2f, yTip.Y + 2.5f, yTip.X, yTip.Y);
+                            g.DrawLine(py, yTip.X + 2.2f, yTip.Y + 2.5f, yTip.X, yTip.Y);
+
+                            g.DrawLine(px, originPt, xTip);
+                            g.DrawLine(px, xTip.X - 2.5f, xTip.Y - 2.2f, xTip.X, xTip.Y);
+                            g.DrawLine(px, xTip.X - 2.5f, xTip.Y + 2.2f, xTip.X, xTip.Y);
+
+                            g.DrawLine(pz, originPt, zTip);
+                            g.DrawLine(pz, zTip.X, zTip.Y - 2.8f, zTip.X, zTip.Y);
+                            g.DrawLine(pz, zTip.X + 2.8f, zTip.Y, zTip.X, zTip.Y);
+                        }
+                        g.FillEllipse(brush, originPt.X - 1.6f, originPt.Y - 1.6f, 3.2f, 3.2f);
                         break;
                 }
             }

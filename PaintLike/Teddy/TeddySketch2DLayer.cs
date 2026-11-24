@@ -12,7 +12,8 @@ namespace PaintLike.Teddy
     public enum Sketch2DToolMode
     {
         DrawStroke,     // Vẽ nét phác thảo 2D bằng Chuột Trái
-        EraseStroke     // Tẩy xóa nét nháp 2D bằng Chuột Trái
+        EraseStroke,    // Tẩy xóa nét nháp 2D bằng Chuột Trái
+        Move3DMesh      // Di chuyển hình 3D sang vị trí khác bằng Chuột Trái
     }
 
     /// <summary>

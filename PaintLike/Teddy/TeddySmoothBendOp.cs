@@ -281,7 +281,6 @@ namespace PaintLike.Teddy
             // Bán kính ảnh hưởng mềm dựa trên độ dài đường chuẩn
             float influenceRadius = MathF.Max(65f, refLen * 0.95f);
             float smoothingA = influenceRadius * 0.18f;
-            Quaternion invRot = Quaternion.Conjugate(camera.Rotation);
 
             for (int vIdx = 0; vIdx < mesh.Vertices.Count; vIdx++)
             {
@@ -321,7 +320,7 @@ namespace PaintLike.Teddy
                     Vector2 finalXY = Vector2.Lerp(p, warpedXY, falloff);
 
                     Vector3 newViewPos = new Vector3(finalXY.X, finalXY.Y, viewPos.Z);
-                    mesh.Vertices[vIdx] = Vector3.Transform(newViewPos, invRot);
+                    mesh.Vertices[vIdx] = camera.ViewToWorld(newViewPos);
                 }
             }
 
@@ -353,7 +352,7 @@ namespace PaintLike.Teddy
                     {
                         float falloff = MathF.Exp(-MathF.Pow(MathF.Max(0f, minD - influenceRadius * 0.5f) / influenceRadius, 2f));
                         Vector2 finalXY = Vector2.Lerp(p, wSum / wTot, falloff);
-                        sl.Points[k] = Vector3.Transform(new Vector3(finalXY.X, finalXY.Y, vp.Z), invRot);
+                        sl.Points[k] = camera.ViewToWorld(new Vector3(finalXY.X, finalXY.Y, vp.Z));
                     }
                 }
             }

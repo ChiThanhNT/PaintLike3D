@@ -35,6 +35,33 @@ namespace PaintLike.Teddy
     }
 
     /// <summary>
+    /// Góc nhìn nhanh theo trục tọa độ 3D khi bấm vào La bàn Trục 3D.
+    /// </summary>
+    public enum TeddyAxisSnapView
+    {
+        None,
+        PosX,
+        NegX,
+        PosY,
+        NegY,
+        PosZ,
+        NegZ,
+        Isometric
+    }
+
+    /// <summary>
+    /// Phần tay nắm của Hệ Trục Tọa Độ 3D Oxyz để kéo di chuyển khối 3D trên Viewport.
+    /// </summary>
+    public enum TeddyAxisDragHandle
+    {
+        None,
+        FreeCenterO,
+        AxisX,
+        AxisY,
+        AxisZ
+    }
+
+    /// <summary>
     /// [TV3-03] Bộ kết xuất đồ họa 3D phần mềm tốc độ cao (Mục 1 & 6 bài báo Teddy).
     /// Hỗ trợ Z-sorting (Painter's Algorithm), loại bỏ mặt khuất (Back-face culling),
     /// tự động phát hiện đường viền Silhouette cho chế độ Pen-and-Ink NPR và kết xuất ảnh PNG trong suốt.
@@ -609,15 +636,26 @@ namespace PaintLike.Teddy
             Quaternion invCreationRot = Quaternion.Conjugate(dbg.CreationViewRotation);
             PointF Map2DToScreen(Vector2 pt2D)
             {
-                Vector3 worldPt = Vector3.Transform(new Vector3(pt2D.X, pt2D.Y, 0f), invCreationRot);
+                Vector3 worldPt = Vector3.Transform(new Vector3(pt2D.X, pt2D.Y, 0f), invCreationRot) + dbg.TranslationOffset3D;
                 Vector3 sp = camera.ProjectToScreen(worldPt, viewport);
                 return new PointF(sp.X, sp.Y);
             }
 
             int nBound = dbg.BoundaryPolygon2D.Count;
             PointF[] boundScreen = new PointF[nBound];
-            for (int i = 0; i < nBound; i++)
-                boundScreen[i] = Map2DToScreen(dbg.BoundaryPolygon2D[i]);
+            if (stepView == TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D && dbg.BoundaryPolygon3D.Count == nBound)
+            {
+                for (int i = 0; i < nBound; i++)
+                {
+                    Vector3 sp = camera.ProjectToScreen(dbg.BoundaryPolygon3D[i], viewport);
+                    boundScreen[i] = new PointF(sp.X, sp.Y);
+                }
+            }
+            else
+            {
+                for (int i = 0; i < nBound; i++)
+                    boundScreen[i] = Map2DToScreen(dbg.BoundaryPolygon2D[i]);
+            }
 
             switch (stepView)
             {
@@ -829,6 +867,633 @@ namespace PaintLike.Teddy
                 new Rectangle(rect.X + 12, rect.Y + 26, rect.Width - 24, 22),
                 UITheme.TextPrimary,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        }
+
+        // =========================================================================
+        // HỆ TRỤC TỌA ĐỘ 3D KHÔNG GIAN (WORLD OXYZ AXES) & LA BÀN TRỤC 3D (GIZMO)
+        // =========================================================================
+
+        private struct AxisRayItem
+        {
+            public TeddyAxisSnapView AxisView;
+            public string Label;
+            public Vector3 WorldDir;
+            public Color Color;
+            public bool IsPositive;
+            public Vector3 ViewDir;
+            public PointF ScreenTip;
+        }
+
+        private static readonly (TeddyAxisSnapView AxisView, string Label, Vector3 WorldDir, Color Color, bool IsPositive)[] AxisDefinitions =
+        {
+            (TeddyAxisSnapView.PosX, "+X", Vector3.UnitX,  Color.FromArgb(225, 29, 72),  true),
+            (TeddyAxisSnapView.NegX, "-X", -Vector3.UnitX, Color.FromArgb(225, 29, 72),  false),
+            (TeddyAxisSnapView.PosY, "+Y", Vector3.UnitY,  Color.FromArgb(16, 185, 129), true),
+            (TeddyAxisSnapView.NegY, "-Y", -Vector3.UnitY, Color.FromArgb(16, 185, 129), false),
+            (TeddyAxisSnapView.PosZ, "+Z", Vector3.UnitZ,  Color.FromArgb(37, 99, 235),  true),
+            (TeddyAxisSnapView.NegZ, "-Z", -Vector3.UnitZ, Color.FromArgb(37, 99, 235),  false),
+        };
+
+        private static void GetWorldAxisRayGeometry(
+            Size viewport,
+            VirtualTrackballCamera camera,
+            Vector3 originWorld,
+            float axisLength,
+            Quaternion? localRotation,
+            out PointF originPt,
+            out List<AxisRayItem> rays)
+        {
+            Quaternion meshRot = localRotation ?? Quaternion.Identity;
+            Vector3 originScreen3D = camera.ProjectToScreen(originWorld, viewport);
+            originPt = new PointF(originScreen3D.X, originScreen3D.Y);
+
+            Vector3 originView = camera.WorldToView(originWorld);
+            rays = new List<AxisRayItem>(6);
+            foreach (var def in AxisDefinitions)
+            {
+                Vector3 rotatedDir = Vector3.Normalize(Vector3.Transform(def.WorldDir, meshRot));
+                Vector3 worldTip = originWorld + rotatedDir * axisLength;
+                Vector3 sp = camera.ProjectToScreen(worldTip, viewport);
+                rays.Add(new AxisRayItem
+                {
+                    AxisView = def.AxisView,
+                    Label = def.Label,
+                    WorldDir = rotatedDir,
+                    Color = def.Color,
+                    IsPositive = def.IsPositive,
+                    ViewDir = camera.WorldToView(worldTip) - originView,
+                    ScreenTip = new PointF(sp.X, sp.Y)
+                });
+            }
+
+            // Sắp xếp từ xa tới gần theo độ sâu tương đối Z_view
+            rays.Sort((a, b) => a.ViewDir.Z.CompareTo(b.ViewDir.Z));
+        }
+
+        private static TeddyAxisDragHandle MapAxisViewToDragHandle(TeddyAxisSnapView axisView, Quaternion meshRot, out Vector3 unitAxisWorld)
+        {
+            switch (axisView)
+            {
+                case TeddyAxisSnapView.PosX:
+                case TeddyAxisSnapView.NegX:
+                    unitAxisWorld = Vector3.Normalize(Vector3.Transform(Vector3.UnitX, meshRot));
+                    return TeddyAxisDragHandle.AxisX;
+                case TeddyAxisSnapView.PosY:
+                case TeddyAxisSnapView.NegY:
+                    unitAxisWorld = Vector3.Normalize(Vector3.Transform(Vector3.UnitY, meshRot));
+                    return TeddyAxisDragHandle.AxisY;
+                case TeddyAxisSnapView.PosZ:
+                case TeddyAxisSnapView.NegZ:
+                    unitAxisWorld = Vector3.Normalize(Vector3.Transform(Vector3.UnitZ, meshRot));
+                    return TeddyAxisDragHandle.AxisZ;
+                default:
+                    unitAxisWorld = Vector3.Zero;
+                    return TeddyAxisDragHandle.None;
+            }
+        }
+
+        private static float DistancePointToSegment2D(PointF p, PointF a, PointF b)
+        {
+            float dx = b.X - a.X;
+            float dy = b.Y - a.Y;
+            float lenSq = dx * dx + dy * dy;
+            if (lenSq < 1e-5f)
+            {
+                float ddx = p.X - a.X;
+                float ddy = p.Y - a.Y;
+                return MathF.Sqrt(ddx * ddx + ddy * ddy);
+            }
+            float t = Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq, 0f, 1f);
+            float qx = a.X + t * dx;
+            float qy = a.Y + t * dy;
+            return MathF.Sqrt((p.X - qx) * (p.X - qx) + (p.Y - qy) * (p.Y - qy));
+        }
+
+        /// <summary>
+        /// Kiểm tra xem con trỏ chuột có đang chạm vào Tâm O hoặc thân/mũi tên Trục X, Y, Z của hình 3D đang chọn để kéo di chuyển khối không.
+        /// </summary>
+        public static bool HitTestWorldAxesGizmo(
+            Size viewport,
+            VirtualTrackballCamera camera,
+            Vector3 originWorld,
+            float referenceRadius,
+            Point mousePos,
+            out TeddyAxisDragHandle handle,
+            out Vector3 axisWorldDir,
+            Quaternion? localRotation = null)
+        {
+            handle = TeddyAxisDragHandle.None;
+            axisWorldDir = Vector3.Zero;
+            if (viewport.Width < 40 || viewport.Height < 40) return false;
+
+            Quaternion meshRot = localRotation ?? Quaternion.Identity;
+            float refRadius = Math.Clamp(referenceRadius, 75f, 360f);
+            float axisLength = refRadius * 1.38f;
+            GetWorldAxisRayGeometry(viewport, camera, originWorld, axisLength, meshRot, out PointF originPt, out var rays);
+
+            float cdx = mousePos.X - originPt.X;
+            float cdy = mousePos.Y - originPt.Y;
+            if (cdx * cdx + cdy * cdy <= 13f * 13f)
+            {
+                handle = TeddyAxisDragHandle.FreeCenterO;
+                return true;
+            }
+
+            PointF mouseF = mousePos;
+            for (int i = rays.Count - 1; i >= 0; i--)
+            {
+                var ray = rays[i];
+                float dx = ray.ScreenTip.X - originPt.X;
+                float dy = ray.ScreenTip.Y - originPt.Y;
+                float segLen = MathF.Sqrt(dx * dx + dy * dy);
+                if (segLen < 6f) continue;
+
+                float ux = dx / segLen;
+                float uy = dy / segLen;
+                float distToSeg = DistancePointToSegment2D(mouseF, originPt, ray.ScreenTip);
+
+                bool hit = distToSeg <= 10f;
+                if (!hit && (ray.IsPositive || segLen >= 20f))
+                {
+                    float offset = ray.IsPositive ? 14f : 11f;
+                    float bx = ray.ScreenTip.X + ux * offset;
+                    float by = ray.ScreenTip.Y + uy * offset;
+                    float bdx = mouseF.X - bx;
+                    float bdy = mouseF.Y - by;
+                    if (bdx * bdx + bdy * bdy <= 13f * 13f)
+                        hit = true;
+                }
+
+                if (hit)
+                {
+                    handle = MapAxisViewToDragHandle(ray.AxisView, meshRot, out axisWorldDir);
+                    return handle != TeddyAxisDragHandle.None;
+                }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Vẽ Hệ Trục Tọa Độ 3D Oxyz (X: Đỏ, Y: Xanh lá, Z: Xanh dương) bám theo tâm & hướng xoay riêng của hình vẽ / khối 3D.
+        /// </summary>
+        public static void DrawWorldCoordinateAxes3D(
+            Graphics g,
+            Size viewport,
+            VirtualTrackballCamera camera,
+            bool isOverlayOnMesh,
+            Vector3? customOriginWorld = null,
+            float? customReferenceRadius = null,
+            (Vector3 Min, Vector3 Max)? meshBounds3D = null,
+            TeddyAxisDragHandle highlightedHandle = TeddyAxisDragHandle.None,
+            Quaternion? localRotation = null,
+            bool isCompactSecondary = false)
+        {
+            if (viewport.Width < 40 || viewport.Height < 40) return;
+
+            SmoothingMode oldSmooth = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            Vector3 originWorld = customOriginWorld ?? Vector3.Zero;
+            Quaternion meshRot = localRotation ?? Quaternion.Identity;
+            float refRadius = Math.Clamp(customReferenceRadius ?? 135f, 75f, 360f);
+            float planeRadius = refRadius * 1.15f;
+            float axisLength = isCompactSecondary ? refRadius * 0.95f : refRadius * 1.38f;
+            float diagExtent = planeRadius * 0.71f;
+
+            // 1. Khi ở lớp nền trước khi vẽ khối: Vẽ vòng tròn & đường chéo mặt phẳng tham chiếu đáy XZ theo hướng xoay riêng của hình
+            if (!isOverlayOnMesh)
+            {
+                const int ringSegments = 48;
+                PointF[] ringPts = new PointF[ringSegments + 1];
+                for (int i = 0; i <= ringSegments; i++)
+                {
+                    float theta = (i % ringSegments) * (MathF.PI * 2f / ringSegments);
+                    Vector3 localCirclePt = new Vector3(MathF.Cos(theta) * planeRadius, 0f, MathF.Sin(theta) * planeRadius);
+                    Vector3 wp = originWorld + Vector3.Transform(localCirclePt, meshRot);
+                    Vector3 sp = camera.ProjectToScreen(wp, viewport);
+                    ringPts[i] = new PointF(sp.X, sp.Y);
+                }
+
+                using (Pen ringPen = new Pen(Color.FromArgb(120, 148, 163, 184), 1.15f))
+                {
+                    ringPen.DashPattern = new float[] { 4f, 4f };
+                    g.DrawLines(ringPen, ringPts);
+                }
+
+                using (Pen diagPen = new Pen(Color.FromArgb(65, 148, 163, 184), 1.0f))
+                {
+                    diagPen.DashPattern = new float[] { 3f, 4f };
+                    Vector3 d1a = camera.ProjectToScreen(originWorld + Vector3.Transform(new Vector3(-diagExtent, 0f, -diagExtent), meshRot), viewport);
+                    Vector3 d1b = camera.ProjectToScreen(originWorld + Vector3.Transform(new Vector3(diagExtent, 0f, diagExtent), meshRot), viewport);
+                    Vector3 d2a = camera.ProjectToScreen(originWorld + Vector3.Transform(new Vector3(-diagExtent, 0f, diagExtent), meshRot), viewport);
+                    Vector3 d2b = camera.ProjectToScreen(originWorld + Vector3.Transform(new Vector3(diagExtent, 0f, -diagExtent), meshRot), viewport);
+                    g.DrawLine(diagPen, d1a.X, d1a.Y, d1b.X, d1b.Y);
+                    g.DrawLine(diagPen, d2a.X, d2a.Y, d2b.X, d2b.Y);
+                }
+
+                g.SmoothingMode = oldSmooth;
+                return;
+            }
+
+            // 2. Vẽ các bán trục Oxyz xuất phát từ tâm & xoay theo LocalRotation của hình 3D (đã sắp xếp Z-order từ xa tới gần)
+            GetWorldAxisRayGeometry(viewport, camera, originWorld, axisLength, meshRot, out PointF originPt, out var rays);
+
+            foreach (var ray in rays)
+            {
+                if (isCompactSecondary && !ray.IsPositive)
+                    continue;
+
+                float dx = ray.ScreenTip.X - originPt.X;
+                float dy = ray.ScreenTip.Y - originPt.Y;
+                float segLen = MathF.Sqrt(dx * dx + dy * dy);
+                bool hasVisibleSpan = segLen >= 6f;
+
+                var dragHandle = MapAxisViewToDragHandle(ray.AxisView, meshRot, out _);
+                bool isHighlighted = !isCompactSecondary && highlightedHandle != TeddyAxisDragHandle.None && highlightedHandle == dragHandle;
+
+                if (ray.IsPositive)
+                {
+                    int alpha = isCompactSecondary ? 155 : (isHighlighted ? 255 : 215);
+                    Color lineCol = Color.FromArgb(alpha, ray.Color);
+
+                    if (hasVisibleSpan)
+                    {
+                        float lineW = isCompactSecondary ? 1.8f : (isHighlighted ? 3.8f : 2.3f);
+                        using (Pen haloPen = new Pen(Color.FromArgb(isHighlighted ? 225 : (isCompactSecondary ? 95 : 145), 255, 255, 255), lineW + 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                        using (Pen axisPen = new Pen(lineCol, lineW) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                        {
+                            g.DrawLine(haloPen, originPt, ray.ScreenTip);
+                            g.DrawLine(axisPen, originPt, ray.ScreenTip);
+                        }
+
+                        float ux = dx / segLen;
+                        float uy = dy / segLen;
+                        float px = -uy;
+                        float py = ux;
+
+                        if (!isCompactSecondary)
+                        {
+                            using (Pen tickPen = new Pen(Color.FromArgb(isHighlighted ? 245 : 185, ray.Color), isHighlighted ? 2.0f : 1.5f))
+                            {
+                                float tickStep = axisLength * 0.25f;
+                                for (int s = 1; s <= 3; s++)
+                                {
+                                    float dist = tickStep * s;
+                                    Vector3 tickSp = camera.ProjectToScreen(originWorld + ray.WorldDir * dist, viewport);
+                                    g.DrawLine(tickPen,
+                                        tickSp.X - px * 4.5f, tickSp.Y - py * 4.5f,
+                                        tickSp.X + px * 4.5f, tickSp.Y + py * 4.5f);
+                                }
+                            }
+                        }
+
+                        // Đầu mũi tên 3D tại đỉnh trục dương
+                        float arrowLen = isCompactSecondary ? 8.5f : (isHighlighted ? 13.5f : 11f);
+                        float arrowHalfW = isCompactSecondary ? 3.6f : (isHighlighted ? 5.6f : 4.5f);
+                        PointF arrowTip = ray.ScreenTip;
+                        PointF arrowBase = new PointF(arrowTip.X - ux * arrowLen, arrowTip.Y - uy * arrowLen);
+                        PointF[] arrowPoly =
+                        {
+                            arrowTip,
+                            new PointF(arrowBase.X + px * arrowHalfW, arrowBase.Y + py * arrowHalfW),
+                            new PointF(arrowBase.X - px * arrowHalfW, arrowBase.Y - py * arrowHalfW)
+                        };
+                        using (SolidBrush arrowBrush = new SolidBrush(lineCol))
+                        {
+                            g.FillPolygon(arrowBrush, arrowPoly);
+                        }
+
+                        // Huy hiệu nhãn "+X", "+Y", "+Z" đặt hơi vượt qua đầu mũi tên
+                        PointF badgeCenter = new PointF(arrowTip.X + ux * (isCompactSecondary ? 11f : 14f), arrowTip.Y + uy * (isCompactSecondary ? 11f : 14f));
+                        DrawWorldAxisBadge(g, badgeCenter, ray.Label, isCompactSecondary ? Color.FromArgb(190, ray.Color) : ray.Color, isPositive: true, isHighlighted: isHighlighted);
+                    }
+                    else if (ray.ViewDir.Z > 0f)
+                    {
+                        DrawWorldAxisBadge(g, new PointF(originPt.X + 16f, originPt.Y - 14f), ray.Label, isCompactSecondary ? Color.FromArgb(190, ray.Color) : ray.Color, isPositive: true, isHighlighted: isHighlighted);
+                    }
+                }
+                else
+                {
+                    if (hasVisibleSpan)
+                    {
+                        using (Pen negPen = new Pen(Color.FromArgb(isHighlighted ? 235 : 150, ray.Color), isHighlighted ? 2.4f : 1.5f))
+                        {
+                            negPen.DashPattern = new float[] { 4f, 3f };
+                            g.DrawLine(negPen, originPt, ray.ScreenTip);
+                        }
+
+                        if (segLen >= 20f)
+                        {
+                            float ux = dx / segLen;
+                            float uy = dy / segLen;
+                            PointF badgeCenter = new PointF(ray.ScreenTip.X + ux * 11f, ray.ScreenTip.Y + uy * 11f);
+                            DrawWorldAxisBadge(g, badgeCenter, ray.Label, ray.Color, isPositive: false, isHighlighted: isHighlighted);
+                        }
+                    }
+                    else if (ray.ViewDir.Z > 0f)
+                    {
+                        DrawWorldAxisBadge(g, new PointF(originPt.X + 16f, originPt.Y - 14f), ray.Label, ray.Color, isPositive: false, isHighlighted: isHighlighted);
+                    }
+                }
+
+                // Vẽ 6 chấm giao điểm nhỏ tại nơi các trục X, Y, Z xuyên qua 6 mặt hộp bao của khối 3D
+                if (!isCompactSecondary && hasVisibleSpan && meshBounds3D.HasValue)
+                {
+                    var (bMin, bMax) = meshBounds3D.Value;
+                    Vector3 halfExt = (bMax - bMin) * 0.5f;
+                    float faceExtent = float.MaxValue;
+                    if (MathF.Abs(ray.WorldDir.X) > 1e-4f) faceExtent = MathF.Min(faceExtent, halfExt.X / MathF.Abs(ray.WorldDir.X));
+                    if (MathF.Abs(ray.WorldDir.Y) > 1e-4f) faceExtent = MathF.Min(faceExtent, halfExt.Y / MathF.Abs(ray.WorldDir.Y));
+                    if (MathF.Abs(ray.WorldDir.Z) > 1e-4f) faceExtent = MathF.Min(faceExtent, halfExt.Z / MathF.Abs(ray.WorldDir.Z));
+
+                    if (faceExtent < float.MaxValue * 0.5f && faceExtent > 4f)
+                    {
+                        Vector3 piercePt3D = originWorld + ray.WorldDir * faceExtent;
+                        Vector3 pierceSp = camera.ProjectToScreen(piercePt3D, viewport);
+                        using (SolidBrush pierceFill = new SolidBrush(ray.Color))
+                        using (Pen pierceBorder = new Pen(Color.White, 1.3f))
+                        {
+                            g.FillEllipse(pierceFill, pierceSp.X - 3.2f, pierceSp.Y - 3.2f, 6.4f, 6.4f);
+                            g.DrawEllipse(pierceBorder, pierceSp.X - 3.2f, pierceSp.Y - 3.2f, 6.4f, 6.4f);
+                        }
+                    }
+                }
+            }
+
+            // Vẽ tâm gốc tọa độ O tại tâm hình vẽ / khối 3D
+            bool centerHighlighted = !isCompactSecondary && highlightedHandle == TeddyAxisDragHandle.FreeCenterO;
+            float centerRadius = isCompactSecondary ? 3.8f : (centerHighlighted ? 6.8f : 4.8f);
+            if (centerHighlighted)
+            {
+                using (SolidBrush haloFill = new SolidBrush(Color.FromArgb(65, 79, 70, 229)))
+                {
+                    g.FillEllipse(haloFill, originPt.X - 11f, originPt.Y - 11f, 22f, 22f);
+                }
+            }
+            using (SolidBrush centerFill = new SolidBrush(centerHighlighted ? UITheme.AccentPrimarySubtle : Color.White))
+            using (Pen centerBorder = new Pen(centerHighlighted ? UITheme.AccentPrimary : (isCompactSecondary ? Color.FromArgb(170, UITheme.TextPrimary) : UITheme.TextPrimary), centerHighlighted ? 2.6f : (isCompactSecondary ? 1.6f : 2.0f)))
+            {
+                g.FillEllipse(centerFill, originPt.X - centerRadius, originPt.Y - centerRadius, centerRadius * 2f, centerRadius * 2f);
+                g.DrawEllipse(centerBorder, originPt.X - centerRadius, originPt.Y - centerRadius, centerRadius * 2f, centerRadius * 2f);
+            }
+
+            if (!isCompactSecondary && (originWorld.LengthSquared() > 1f || highlightedHandle != TeddyAxisDragHandle.None))
+            {
+                string coordText = $"O({(int)MathF.Round(originWorld.X)}, {(int)MathF.Round(originWorld.Y)}, {(int)MathF.Round(originWorld.Z)})";
+                Size textSz = TextRenderer.MeasureText(coordText, UITheme.FontSmallBold);
+                Rectangle coordRect = new Rectangle((int)originPt.X + 10, (int)originPt.Y + 6, textSz.Width + 6, 17);
+                using (GraphicsPath coordGp = UITheme.CreateRoundedRect(coordRect, 5))
+                using (SolidBrush coordBg = new SolidBrush(Color.FromArgb(228, 255, 255, 255)))
+                using (Pen coordBd = new Pen(centerHighlighted ? UITheme.AccentPrimary : UITheme.BorderDefault, 1.0f))
+                {
+                    g.FillPath(coordBg, coordGp);
+                    g.DrawPath(coordBd, coordGp);
+                }
+                TextRenderer.DrawText(g, coordText, UITheme.FontSmallBold, coordRect,
+                    centerHighlighted ? UITheme.AccentPrimary : UITheme.TextPrimary,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+            else if (!isCompactSecondary)
+            {
+                Rectangle oRect = new Rectangle((int)originPt.X - 18, (int)originPt.Y + 4, 16, 15);
+                using (SolidBrush oBg = new SolidBrush(Color.FromArgb(205, 255, 255, 255)))
+                {
+                    g.FillEllipse(oBg, oRect);
+                }
+                TextRenderer.DrawText(g, "O", UITheme.FontSmallBold, oRect, UITheme.TextPrimary,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+
+            g.SmoothingMode = oldSmooth;
+        }
+
+        private static void DrawWorldAxisBadge(Graphics g, PointF center, string label, Color axisColor, bool isPositive, bool isHighlighted = false)
+        {
+            if (isPositive)
+            {
+                Rectangle badgeRect = new Rectangle((int)MathF.Round(center.X - 12f), (int)MathF.Round(center.Y - 9f), 24, 18);
+                using (GraphicsPath gp = UITheme.CreateRoundedRect(badgeRect, 9))
+                using (SolidBrush fill = new SolidBrush(axisColor))
+                using (Pen border = new Pen(isHighlighted ? UITheme.TextPrimary : Color.White, isHighlighted ? 2.0f : 1.4f))
+                {
+                    g.FillPath(fill, gp);
+                    g.DrawPath(border, gp);
+                }
+                TextRenderer.DrawText(g, label, UITheme.FontSmallBold, badgeRect, Color.White,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+            else
+            {
+                Rectangle badgeRect = new Rectangle((int)MathF.Round(center.X - 11f), (int)MathF.Round(center.Y - 8f), 22, 16);
+                using (GraphicsPath gp = UITheme.CreateRoundedRect(badgeRect, 8))
+                using (SolidBrush fill = new SolidBrush(Color.FromArgb(isHighlighted ? 250 : 228, 255, 255, 255)))
+                using (Pen border = new Pen(isHighlighted ? axisColor : Color.FromArgb(165, axisColor), isHighlighted ? 1.8f : 1.1f))
+                {
+                    g.FillPath(fill, gp);
+                    g.DrawPath(border, gp);
+                }
+                TextRenderer.DrawText(g, label, UITheme.FontSmallBold, badgeRect, axisColor,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+        }
+
+        private static void GetCornerGizmoLayout(
+            Size viewport,
+            VirtualTrackballCamera camera,
+            Quaternion? activeObjectRotation,
+            out Rectangle cardBounds,
+            out PointF gizmoCenter,
+            out Rectangle isoButtonRect,
+            out List<AxisRayItem> sortedAxes)
+        {
+            cardBounds = new Rectangle(Math.Max(10, viewport.Width - 130), 10, 120, 138);
+            gizmoCenter = new PointF(cardBounds.X + cardBounds.Width * 0.5f, cardBounds.Y + 64f);
+            isoButtonRect = new Rectangle(cardBounds.X + 14, cardBounds.Bottom - 24, cardBounds.Width - 28, 18);
+            const float axisRadius = 38f;
+
+            Quaternion combinedRot = Quaternion.Normalize(camera.Rotation * (activeObjectRotation ?? Quaternion.Identity));
+
+            sortedAxes = new List<AxisRayItem>(6);
+            foreach (var def in AxisDefinitions)
+            {
+                Vector3 vd = Vector3.Normalize(Vector3.Transform(def.WorldDir, combinedRot));
+                sortedAxes.Add(new AxisRayItem
+                {
+                    AxisView = def.AxisView,
+                    Label = def.IsPositive ? def.Label.TrimStart('+') : def.Label,
+                    WorldDir = def.WorldDir,
+                    Color = def.Color,
+                    IsPositive = def.IsPositive,
+                    ViewDir = vd,
+                    ScreenTip = new PointF(gizmoCenter.X + vd.X * axisRadius, gizmoCenter.Y - vd.Y * axisRadius)
+                });
+            }
+
+            // Xa trước -> gần sau
+            sortedAxes.Sort((a, b) => a.ViewDir.Z.CompareTo(b.ViewDir.Z));
+        }
+
+        /// <summary>
+        /// Kiểm tra chuột có đang nằm trên La bàn Trục 3D (hoặc nút đầu trục X/Y/Z/ISO) ở góc trên phải hay không.
+        /// </summary>
+        public static bool HitTestCornerAxisGizmo(
+            Size viewport,
+            VirtualTrackballCamera camera,
+            Point mousePos,
+            out TeddyAxisSnapView hitAxis,
+            out Rectangle cardBounds,
+            Quaternion? activeObjectRotation = null)
+        {
+            hitAxis = TeddyAxisSnapView.None;
+            if (viewport.Width < 160 || viewport.Height < 170)
+            {
+                cardBounds = Rectangle.Empty;
+                return false;
+            }
+
+            GetCornerGizmoLayout(viewport, camera, activeObjectRotation, out cardBounds, out _, out Rectangle isoButtonRect, out var sortedAxes);
+
+            if (!cardBounds.Contains(mousePos))
+                return false;
+
+            if (isoButtonRect.Contains(mousePos))
+            {
+                hitAxis = TeddyAxisSnapView.Isometric;
+                return true;
+            }
+
+            // Kiểm tra từ gần đến xa (reverse Z-order) để ưu tiên chọn đầu trục phía trước nếu 2 đầu trùng nhau
+            for (int i = sortedAxes.Count - 1; i >= 0; i--)
+            {
+                var axis = sortedAxes[i];
+                float hitRadius = axis.IsPositive ? 12.5f : 10f;
+                float dx = mousePos.X - axis.ScreenTip.X;
+                float dy = mousePos.Y - axis.ScreenTip.Y;
+                if (dx * dx + dy * dy <= hitRadius * hitRadius)
+                {
+                    hitAxis = axis.AxisView;
+                    return true;
+                }
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Vẽ La bàn Trục 3D Oxyz (Orientation Gizmo) ở góc trên phải Viewport để nhận biết và xoay nhanh hình/camera theo trục X/Y/Z.
+        /// </summary>
+        public static void DrawCornerAxisGizmo3D(
+            Graphics g,
+            Size viewport,
+            VirtualTrackballCamera camera,
+            Point mousePos,
+            bool isMouseInViewport,
+            out TeddyAxisSnapView hoveredAxis,
+            Quaternion? activeObjectRotation = null)
+        {
+            hoveredAxis = TeddyAxisSnapView.None;
+            if (viewport.Width < 160 || viewport.Height < 170) return;
+
+            SmoothingMode oldSmooth = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            GetCornerGizmoLayout(viewport, camera, activeObjectRotation, out Rectangle cardBounds, out PointF gizmoCenter, out Rectangle isoButtonRect, out var sortedAxes);
+
+            if (isMouseInViewport && HitTestCornerAxisGizmo(viewport, camera, mousePos, out TeddyAxisSnapView hit, out _, activeObjectRotation))
+            {
+                hoveredAxis = hit;
+            }
+
+            // Nền thẻ La bàn bán trong suốt (Bright Studio Light)
+            using (GraphicsPath cardPath = UITheme.CreateRoundedRect(cardBounds, 10))
+            using (SolidBrush cardBg = new SolidBrush(Color.FromArgb(238, 255, 255, 255)))
+            using (Pen cardBorder = new Pen(UITheme.BorderDefault, 1.2f))
+            {
+                g.FillPath(cardBg, cardPath);
+                g.DrawPath(cardBorder, cardPath);
+            }
+
+            // Tiêu đề thẻ
+            Rectangle headerRect = new Rectangle(cardBounds.X + 4, cardBounds.Y + 4, cardBounds.Width - 8, 16);
+            TextRenderer.DrawText(g, "HỆ TRỤC 3D OXYZ", UITheme.FontGroupHeader, headerRect, UITheme.TextPrimary,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+
+            // Vòng tròn quỹ đạo mảnh quanh tâm La bàn
+            const float dialRadius = 43f;
+            using (SolidBrush dialFill = new SolidBrush(Color.FromArgb(145, 241, 245, 249)))
+            using (Pen dialBorder = new Pen(Color.FromArgb(120, 203, 213, 225), 1.0f))
+            {
+                g.FillEllipse(dialFill, gizmoCenter.X - dialRadius, gizmoCenter.Y - dialRadius, dialRadius * 2f, dialRadius * 2f);
+                g.DrawEllipse(dialBorder, gizmoCenter.X - dialRadius, gizmoCenter.Y - dialRadius, dialRadius * 2f, dialRadius * 2f);
+            }
+
+            // Vẽ 6 đầu trục sắp xếp theo chiều sâu Z
+            foreach (var axis in sortedAxes)
+            {
+                bool isHovered = hoveredAxis == axis.AxisView;
+
+                if (axis.IsPositive)
+                {
+                    using (Pen shaftPen = new Pen(axis.Color, isHovered ? 3.2f : 2.5f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    {
+                        g.DrawLine(shaftPen, gizmoCenter, axis.ScreenTip);
+                    }
+
+                    float r = isHovered ? 12.2f : 11f;
+                    RectangleF nodeRect = new RectangleF(axis.ScreenTip.X - r, axis.ScreenTip.Y - r, r * 2f, r * 2f);
+                    using (SolidBrush nodeFill = new SolidBrush(axis.Color))
+                    using (Pen nodeBorder = new Pen(isHovered ? UITheme.TextPrimary : Color.White, isHovered ? 2.0f : 1.5f))
+                    {
+                        g.FillEllipse(nodeFill, nodeRect);
+                        g.DrawEllipse(nodeBorder, nodeRect);
+                    }
+
+                    TextRenderer.DrawText(g, axis.Label, UITheme.FontSmallBold, Rectangle.Round(nodeRect), Color.White,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                }
+                else
+                {
+                    using (Pen negShaftPen = new Pen(Color.FromArgb(120, axis.Color), 1.4f))
+                    {
+                        negShaftPen.DashPattern = new float[] { 3f, 2f };
+                        g.DrawLine(negShaftPen, gizmoCenter, axis.ScreenTip);
+                    }
+
+                    float r = isHovered ? 9.5f : 8.5f;
+                    RectangleF nodeRect = new RectangleF(axis.ScreenTip.X - r, axis.ScreenTip.Y - r, r * 2f, r * 2f);
+                    using (SolidBrush nodeFill = new SolidBrush(isHovered ? Color.FromArgb(255, 241, 245, 249) : Color.FromArgb(242, 255, 255, 255)))
+                    using (Pen nodeBorder = new Pen(axis.Color, isHovered ? 1.8f : 1.2f))
+                    {
+                        g.FillEllipse(nodeFill, nodeRect);
+                        g.DrawEllipse(nodeBorder, nodeRect);
+                    }
+
+                    TextRenderer.DrawText(g, axis.Label, UITheme.FontGroupHeader, Rectangle.Round(nodeRect), axis.Color,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                }
+            }
+
+            // Chấm tâm O ở giữa La bàn
+            using (SolidBrush centerDot = new SolidBrush(UITheme.TextPrimary))
+            {
+                g.FillEllipse(centerDot, gizmoCenter.X - 3f, gizmoCenter.Y - 3f, 6f, 6f);
+            }
+
+            // Nút "Góc 3D (ISO)" ở đáy thẻ La bàn
+            bool isoHover = hoveredAxis == TeddyAxisSnapView.Isometric;
+            using (GraphicsPath isoPath = UITheme.CreateRoundedRect(isoButtonRect, 5))
+            using (SolidBrush isoBg = new SolidBrush(isoHover ? UITheme.AccentPrimarySubtle : UITheme.BgSurface))
+            using (Pen isoBorder = new Pen(isoHover ? UITheme.AccentPrimary : UITheme.BorderDefault, 1.0f))
+            {
+                g.FillPath(isoBg, isoPath);
+                g.DrawPath(isoBorder, isoPath);
+            }
+            TextRenderer.DrawText(g, "Góc 3D (ISO)", UITheme.FontGroupHeader, isoButtonRect,
+                isoHover ? UITheme.AccentPrimary : UITheme.TextPrimary,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+
+            g.SmoothingMode = oldSmooth;
         }
     }
 }
