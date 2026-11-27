@@ -16,6 +16,30 @@ namespace PaintLike.Teddy
     /// </summary>
     public static class TeddyInflationEngine
     {
+        /// <summary>
+        /// [TV1-07] Số bậc chia góc đều cho cung 1/4 elip (θ_k = π·k / (2·K), bước 15°).
+        /// Mặt cắt toàn phần gồm 2K = 12 đoạn tròn đều, góc nhị diện tại biên Z=0 chỉ 15° (cos 15° ≈ 0.966) -> xoay 90° mượt tuyệt đối.
+        /// </summary>
+        public const int QuarterOvalSteps = 6;
+
+        /// <summary>
+        /// [TV1-07] Hàm tính tọa độ cung 1/4 elip theo góc θ = (π/2)·wBound:
+        /// xy = Lerp(spinePt, boundPt, sin(θ)), z = spineHeight * cos(θ).
+        /// </summary>
+        public static void EvaluateAngularQuarterOval(
+            Vector2 spinePt,
+            Vector2 boundPt,
+            float spineHeight,
+            float wBound,
+            out Vector2 xy,
+            out float zElevation)
+        {
+            float clampedBound = Math.Clamp(wBound, 0f, 1f);
+            float theta = (MathF.PI * 0.5f) * clampedBound;
+            xy = Vector2.Lerp(spinePt, boundPt, MathF.Sin(theta));
+            zElevation = spineHeight * MathF.Cos(theta);
+        }
+
         private struct BaseTri2D
         {
             public int V0;
@@ -130,7 +154,7 @@ namespace PaintLike.Teddy
                 out List<(int A, int B)> spineEdges,
                 out List<BaseTri2D> baseTriangles);
 
-            // Bước 4: Nâng cao độ Z theo thiết diện hình Oval (Quarter-Oval Elevation) & Khâu lưới đối xứng (+Z / -Z)
+            // Bước 4: Nâng cao độ Z theo thiết diện hình Oval theo góc (TV1-07 Angular Quarter-Oval Elevation) & Khâu lưới đối xứng (+Z / -Z)
             TeddyMesh mesh = ConstructSymmetricOvalMesh(
                 vertices2D,
                 isSpineVertex,
@@ -139,10 +163,12 @@ namespace PaintLike.Teddy
                 baseTriangles,
                 camera.Rotation,
                 modelColor,
-                debugInfo);
+                debugInfo,
+                out HashSet<int> silhouetteBoundaryVerts);
 
             // Bước 5: Tối ưu lưới 3D (Mesh Refinement - Hoppe 1993 [12], Mục 5.1 cuối trang 6)
-            TeddyMeshOptimizer.RefineMesh(mesh, 2.2f);
+            // Bảo vệ các đỉnh biên hình bóng Z=0 để giữ tròn mượt thiết diện 1/4 elip (TV1-07) ngay cả trên cuống hẹp
+            TeddyMeshOptimizer.RefineMesh(mesh, 1.2f, silhouetteBoundaryVerts);
             mesh.DebugInfo = debugInfo;
 
             // Bù độ lệch tâm xoay động PivotWorld / PivotView để khối 3D & minh họa 5 bước khớp 1:1 với nét 2D
@@ -584,8 +610,8 @@ namespace PaintLike.Teddy
         }
 
         /// <summary>
-        /// [Mục 5.1 - Hình 15c, 15d] Chuyển đổi từng tam giác cơ sở 2D thành mặt cong Quarter-Oval 3D
-        /// và khâu đối xứng cả hai mặt trước (+Z) và sau (-Z) thành một lưới kín hoàn chỉnh.
+        /// [TV1-07 & Mục 5.1 - Hình 15c, 15d] Chuyển đổi từng tam giác cơ sở 2D thành mặt cong Quarter-Oval 3D
+        /// theo tham số hóa góc đều θ_k = π·k / (2K) (sin θ, cos θ) và khâu đối xứng mặt trước (+Z) & sau (-Z).
         /// </summary>
         private static TeddyMesh ConstructSymmetricOvalMesh(
             List<Vector2> vertices2D,
@@ -595,12 +621,14 @@ namespace PaintLike.Teddy
             List<BaseTri2D> baseTriangles,
             Quaternion viewRotation,
             Color modelColor,
-            TeddyAlgorithmDebugInfo debugInfo)
+            TeddyAlgorithmDebugInfo debugInfo,
+            out HashSet<int> silhouetteBoundaryVerts)
         {
             TeddyMesh mesh = new TeddyMesh
             {
                 BaseColor = modelColor
             };
+            silhouetteBoundaryVerts = new HashSet<int>();
 
             Quaternion invRot = Quaternion.Conjugate(viewRotation);
 
@@ -632,7 +660,7 @@ namespace PaintLike.Teddy
                 debugInfo.ElevatedSpineBottom3D.Add((botA, botB));
             }
 
-            // Lưu các cung 1/4 elip (Quarter-Oval Ribs - Hình 15c) nối từ Spine ra Biên
+            // [TV1-07] Lưu các cung 1/4 elip theo góc đều (Quarter-Oval Ribs - Hình 15c) đồng bộ chính xác với QuarterOvalSteps
             var addedRibPairs = new HashSet<(int, int)>();
             foreach (var bt in baseTriangles)
             {
@@ -647,13 +675,17 @@ namespace PaintLike.Teddy
                         int bIdx = isSpineVertex[a] ? b : a;
                         if (addedRibPairs.Add((sIdx, bIdx)))
                         {
-                            var ribFront = new Vector3[6];
-                            var ribBack = new Vector3[6];
-                            for (int step = 0; step <= 5; step++)
+                            var ribFront = new Vector3[QuarterOvalSteps + 1];
+                            var ribBack = new Vector3[QuarterOvalSteps + 1];
+                            for (int step = 0; step <= QuarterOvalSteps; step++)
                             {
-                                float theta = (MathF.PI * 0.5f) * (step / 5f);
-                                Vector2 xy = Vector2.Lerp(vertices2D[sIdx], vertices2D[bIdx], MathF.Sin(theta));
-                                float z = spineHeights[sIdx] * MathF.Cos(theta);
+                                EvaluateAngularQuarterOval(
+                                    vertices2D[sIdx],
+                                    vertices2D[bIdx],
+                                    spineHeights[sIdx],
+                                    step / (float)QuarterOvalSteps,
+                                    out Vector2 xy,
+                                    out float z);
                                 ribFront[step] = Vector3.Transform(new Vector3(xy.X, xy.Y, z), invRot);
                                 ribBack[step] = Vector3.Transform(new Vector3(xy.X, xy.Y, -z), invRot);
                             }
@@ -664,8 +696,8 @@ namespace PaintLike.Teddy
                 }
             }
 
-            // Số bậc chia cung 1/4 elip theo góc đều từ trục Spine ra biên (K = 5 tạo mặt cắt 10 đoạn tròn mượt, không bị gờ sắc ở đường xích đạo)
-            const int K = 5;
+            // [TV1-07] Số bậc chia cung 1/4 elip theo góc đều từ trục Spine ra biên (K = 6 -> 12 đoạn mặt cắt, góc nhị diện biên Z=0 chỉ 15°)
+            const int K = QuarterOvalSteps;
 
             // [TV1-06] Khâu đỉnh bằng Khóa Topo Chính Xác (Topological Vertex Sewing) thay cho lượng tử hóa tọa độ (Round(xy*10)):
             // Bảo toàn tuyệt đối các cổ/cuống hẹp (Cherry, Snake, tai Teddy) không bị hàn nhầm và không bao giờ nứt cạnh chia sẻ.
@@ -694,6 +726,7 @@ namespace PaintLike.Teddy
                 return (2, triIdx, r, c, 0, 0);
             }
 
+            var boundarySet = silhouetteBoundaryVerts;
             int GetOrAddTopo3DVertex((byte Kind, int A, int B, int C, int W0, int W1) topoKey, Vector2 xy, float zAbs, bool isOnSilhouetteBoundary, bool isBackSide)
             {
                 // Nếu nằm trên biên hình bóng (z == 0, tất cả đỉnh tham gia đều là đỉnh biên), mặt trước (+Z) và mặt sau (-Z) dùng chung đỉnh Topo!
@@ -707,6 +740,7 @@ namespace PaintLike.Teddy
                     mesh.Vertices.Add(worldPt);
                     topoMapFront[topoKey] = newIdx;
                     topoMapBack[topoKey] = newIdx;
+                    boundarySet.Add(newIdx);
                     return newIdx;
                 }
 
@@ -787,9 +821,7 @@ namespace PaintLike.Teddy
                             Vector2 spinePt = spineWeightedPos / wSpine;
                             Vector2 boundPt = boundWeightedPos / wBound;
                             float baseH = weightedSpineH / wSpine;
-                            float theta = (MathF.PI * 0.5f) * wBound;
-                            xy = Vector2.Lerp(spinePt, boundPt, MathF.Sin(theta));
-                            zElevation = baseH * MathF.Cos(theta);
+                            EvaluateAngularQuarterOval(spinePt, boundPt, baseH, wBound, out xy, out zElevation);
                         }
 
                         var topoKey = MakeTopoKey(btIdx, iA, iB, iC, r, c, d);
@@ -836,8 +868,9 @@ namespace PaintLike.Teddy
             }
 
             mesh.BuildConnectivity();
-            // Làm mịn lưới Taubin 2 bước để khử vết gợn giữa các tam giác quạt (Mục 5.1 cuối trang 6)
-            mesh.SmoothMesh(2, 0.38f, -0.40f);
+            // [TV1-07] Làm mịn lưới Taubin 2 bước khóa chặt các đỉnh biên hình bóng Z=0 để giữ nguyên đường viền 2D chuẩn xác
+            // và bảo toàn tiếp tuyến tròn mượt khi xoay 90° sang mặt bên (không tạo gờ sắc hay co rút cuống/tai).
+            mesh.SmoothMesh(2, 0.34f, -0.36f, silhouetteBoundaryVerts);
             mesh.RecalculateNormals();
 
             return mesh;

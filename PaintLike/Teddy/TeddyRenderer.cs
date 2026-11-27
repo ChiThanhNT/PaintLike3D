@@ -838,8 +838,8 @@ namespace PaintLike.Teddy
                         }
                     }
                     DrawStepLegendBanner(g, viewport,
-                        "BƯỚC 5 (Hình 15b-c): NÂNG ĐỘ CAO Z CHO SPINE & KHUNG SƯỜN QUARTER-OVAL 3D (XOAY ĐƯỢC CHUỘT PHẢI!)",
-                        "Hãy giữ Chuột Phải xoay nghiêng để thấy trục Spine nâng cao (+Z màu đỏ, -Z màu xanh) và các cung 1/4 elip nối ra biên!");
+                        "BƯỚC 5 (TV1-07, Hình 15b-c): NÂNG SPINE & CUNG 1/4 ELIP THEO GÓC θ (sin θ, cos θ)",
+                        $"Giữ Chuột Phải xoay 90° để thấy trục Spine (+Z đỏ, -Z xanh) & cung 1/4 elip K={TeddyInflationEngine.QuarterOvalSteps} tròn mượt tại biên Z=0!");
                     break;
                 }
             }

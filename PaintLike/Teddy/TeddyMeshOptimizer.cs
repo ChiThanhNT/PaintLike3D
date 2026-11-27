@@ -15,7 +15,7 @@ namespace PaintLike.Teddy
         /// [Mục 5.1 cuối trang 6] Loại bỏ các cạnh quá ngắn (Edge Collapse) và tam giác suy biến diện tích nhỏ,
         /// kết hợp cân bằng chất lượng lưới tam giác.
         /// </summary>
-        public static int RefineMesh(TeddyMesh mesh, float minEdgeLength = 2.8f)
+        public static int RefineMesh(TeddyMesh mesh, float minEdgeLength = 2.8f, HashSet<int>? protectedVertices = null)
         {
             if (mesh == null || mesh.IsEmpty) return 0;
 
@@ -59,6 +59,9 @@ namespace PaintLike.Teddy
                 {
                     int a = v[e];
                     int b = v[(e + 1) % 3];
+                    if (protectedVertices != null && (protectedVertices.Contains(a) || protectedVertices.Contains(b)))
+                        continue;
+
                     if (a != b && !locked[a] && !locked[b] && Vector3.DistanceSquared(mesh.Vertices[a], mesh.Vertices[b]) < minLenSq)
                     {
                         Vector3 mid = 0.5f * (mesh.Vertices[a] + mesh.Vertices[b]);
