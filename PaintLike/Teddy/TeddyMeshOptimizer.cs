@@ -33,12 +33,13 @@ namespace PaintLike.Teddy
             if (sampleEdges > 0)
             {
                 float avgLen = totalLen / sampleEdges;
-                float adaptiveMin = avgLen * 0.22f;
+                float adaptiveMin = avgLen * 0.08f;
                 minLenSq = MathF.Max(minLenSq, adaptiveMin * adaptiveMin);
             }
 
-            // Gộp các cạnh quá ngắn về trung điểm của chúng
+            // Gộp các cạnh quá ngắn về trung điểm — khóa mỗi đỉnh tối đa 1 lần để tránh hiệu ứng dây chuyền làm méo vùng cực tròn
             int[] parent = new int[mesh.Vertices.Count];
+            bool[] locked = new bool[mesh.Vertices.Count];
             for (int i = 0; i < parent.Length; i++) parent[i] = i;
 
             int FindRoot(int x)
@@ -58,13 +59,15 @@ namespace PaintLike.Teddy
                 {
                     int a = v[e];
                     int b = v[(e + 1) % 3];
-                    if (a != b && Vector3.DistanceSquared(mesh.Vertices[a], mesh.Vertices[b]) < minLenSq)
+                    if (a != b && !locked[a] && !locked[b] && Vector3.DistanceSquared(mesh.Vertices[a], mesh.Vertices[b]) < minLenSq)
                     {
                         Vector3 mid = 0.5f * (mesh.Vertices[a] + mesh.Vertices[b]);
                         int keep = Math.Min(a, b);
                         int drop = Math.Max(a, b);
                         mesh.Vertices[keep] = mid;
                         parent[drop] = keep;
+                        locked[keep] = true;
+                        locked[drop] = true;
                         collapsedCount++;
                     }
                 }
@@ -115,6 +118,12 @@ namespace PaintLike.Teddy
 
             switch (presetKey)
             {
+                case "Sphere":
+                    return CreateSphereSampleStroke(cx, cy, scale);
+
+                case "Cube":
+                    return CreateCubeSampleStroke(cx, cy, scale);
+
                 case "Cherry":
                     return CreateCherrySampleStroke(cx, cy, scale);
 
@@ -125,6 +134,46 @@ namespace PaintLike.Teddy
                 default:
                     return CreateTeddySampleStroke(cx, cy, scale);
             }
+        }
+
+        private static List<PointF> CreateSphereSampleStroke(float cx, float cy, float scale)
+        {
+            float r = scale * 0.62f;
+            const int segments = 48;
+            var pts = new List<PointF>(segments + 1);
+            for (int i = 0; i <= segments; i++)
+            {
+                float angle = (i % segments) * (MathF.PI * 2f / segments);
+                pts.Add(new PointF(cx + MathF.Cos(angle) * r, cy + MathF.Sin(angle) * r));
+            }
+            return pts;
+        }
+
+        private static List<PointF> CreateCubeSampleStroke(float cx, float cy, float scale)
+        {
+            float h = scale * 0.54f;
+            var corners = new PointF[]
+            {
+                new(cx - h, cy - h),
+                new(cx + h, cy - h),
+                new(cx + h, cy + h),
+                new(cx - h, cy + h)
+            };
+
+            const int stepsPerSide = 12;
+            var pts = new List<PointF>(stepsPerSide * 4 + 1);
+            for (int side = 0; side < 4; side++)
+            {
+                PointF a = corners[side];
+                PointF b = corners[(side + 1) % 4];
+                for (int s = 0; s < stepsPerSide; s++)
+                {
+                    float t = s / (float)stepsPerSide;
+                    pts.Add(new PointF(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t));
+                }
+            }
+            pts.Add(corners[0]);
+            return pts;
         }
 
         private static List<PointF> CreateTeddySampleStroke(float cx, float cy, float scale)

@@ -190,14 +190,12 @@ namespace PaintLike.Teddy
             _btnInitBlank.Click += (s, e) => ResetToBlankScene();
 
             _btnSphere = CreateRibbonButton(_panelTopRibbon, new Rectangle(83, 11, 70, 29), IconType.Circle, "Khối Cầu", ButtonVariant.Default,
-                "Nạp sẵn Khối Cầu 3D mẫu (Sphere - Mục 4.2)");
-            _btnSphere.Click += (s, e) => LoadPrimitiveMesh(TeddyMesh.CreateSphere(135f, 28, 18),
-                "Đã nạp Khối Cầu 3D. Vẽ nét 2D lên khối rồi bấm [Dán Nét 3D], [Đặt Vòng Đế] hoặc [Cắt Khối 3D]!");
+                "Triển khai hình vẽ 2D Hình Tròn (Khối Cầu) lên lớp phác thảo. Bấm [Tạo Khối 3D] để dựng thành Khối Cầu 3D!");
+            _btnSphere.Click += (s, e) => DeployPresetAs2DSketch("Sphere", Color.FromArgb(244, 162, 97), "Khối Cầu");
 
             _btnCube = CreateRibbonButton(_panelTopRibbon, new Rectangle(156, 11, 70, 29), IconType.Rectangle, "Khối Hộp", ButtonVariant.Default,
-                "Nạp sẵn Khối Lập Phương chia lưới mịn (Subdivided Cube - Mục 4.2)");
-            _btnCube.Click += (s, e) => LoadPrimitiveMesh(TeddyMesh.CreateCube(105f, 6),
-                "Đã nạp Khối Hộp 3D. Vẽ nét 2D lên khối rồi bấm [Dán Nét 3D], [Đặt Vòng Đế] hoặc [Cắt Khối 3D]!");
+                "Triển khai hình vẽ 2D Hình Vuông (Khối Hộp) lên lớp phác thảo. Bấm [Tạo Khối 3D] để dựng thành Khối Hộp 3D!");
+            _btnCube.Click += (s, e) => DeployPresetAs2DSketch("Cube", Color.FromArgb(99, 179, 237), "Khối Hộp");
 
             _btnToolDraw2D = CreateRibbonButton(_panelTopRibbon, new Rectangle(229, 11, 66, 29), IconType.Rename, "Vẽ 2D", ButtonVariant.Default,
                 "Chế độ vẽ phác thảo 2D bằng Chuột Trái (không tự chạy 3D khi nhả chuột)");
@@ -481,11 +479,11 @@ namespace PaintLike.Teddy
             _panelAlgoStepBar.Controls.Add(lblPresets);
 
             CreatePresetButton(new Rectangle(100, 5, 86, 25), "Gấu Teddy", "TeddySilhouette", Color.FromArgb(244, 162, 97),
-                "Tạo tự động mẫu Gấu Teddy từ đường viền 2D (Hình 1 & Hình 2 bài báo)");
+                "Triển khai hình vẽ 2D Gấu Teddy (Hình 1 & 2 bài báo). Bấm [Tạo Khối 3D] để thổi phồng thành mô hình 3D!");
             CreatePresetButton(new Rectangle(190, 5, 92, 25), "Quả Cherry", "Cherry", Color.FromArgb(239, 68, 68),
-                "Mẫu Quả Cherry (Hình 5c): Minh họa vùng rộng phồng to (quả), vùng hẹp phồng mỏng (cuống)");
+                "Triển khai hình vẽ 2D Quả Cherry (Hình 5c). Bấm [Tạo Khối 3D] để dựng thành mô hình 3D!");
             CreatePresetButton(new Rectangle(286, 5, 82, 25), "Con Rắn", "Snake", Color.FromArgb(34, 197, 94),
-                "Mẫu Con Rắn uốn lượn (Hình 5a): Minh họa trục xương sống Chordal Axis uốn cong");
+                "Triển khai hình vẽ 2D Con Rắn (Hình 5a). Bấm [Tạo Khối 3D] để dựng thành mô hình 3D!");
 
             Label lblSteps = new Label
             {
@@ -634,7 +632,7 @@ namespace PaintLike.Teddy
         {
             Button btn = new Button { Bounds = bounds };
             UITheme.StyleButton(btn, IconType.Star, label, ButtonVariant.Default, false, _toolTip, tooltip);
-            btn.Click += (s, e) => RunPaperPreset(presetKey, presetColor, label);
+            btn.Click += (s, e) => DeployPresetAs2DSketch(presetKey, presetColor, label);
             _panelAlgoStepBar.Controls.Add(btn);
         }
 
@@ -1030,37 +1028,67 @@ namespace PaintLike.Teddy
         }
 
         /// <summary>
-        /// Nút 1: [Tạo Khối 3D] — Mục 5.1 (CDT + Pruning + Spine + Quarter-Oval Elevation).
+        /// Nút 1: [Tạo Khối 3D] — Mục 5.1 & TV1-06 (Thổi phồng đồng loạt toàn bộ nét 2D hợp lệ:
+        /// CDT + Oriented Semicircle Pruning + Topological Sewing + Quarter-Oval Elevation).
         /// </summary>
         private void ApplyInflate3DFromSketch()
         {
             var candidates = _sketchLayer.Strokes.Where(s => s.CutPattern == TeddyCutPattern.Freehand).ToList();
             if (candidates.Count == 0)
             {
-                UpdateStatus("Chưa có nét phác thảo 2D nào! Hãy kéo Chuột Trái vẽ một đường viền khép kín 2D trước khi bấm [Tạo Khối 3D].");
+                UpdateStatus("Chưa có nét phác thảo 2D nào! Hãy vẽ nét 2D hoặc triển khai hình mẫu 2D trước khi bấm [Tạo Khối 3D].");
                 return;
             }
 
-            // Nếu người dùng đang chọn 1 nét cụ thể trong danh sách -> ưu tiên tạo từ nét đó; nếu không -> thử tạo toàn bộ các nét 2D
-            var toInflate = _sketchLayer.SelectedStroke != null && candidates.Contains(_sketchLayer.SelectedStroke)
-                ? new List<SketchStroke2D> { _sketchLayer.SelectedStroke }
-                : candidates;
-
             PushUndoState();
             int createdCount = 0;
+            int failedCount = 0;
             string lastMsg = "";
+            string lastFailMsg = "";
             var consumed = new List<SketchStroke2D>();
+            Size vp = _viewportPanel.ClientSize;
 
-            foreach (var sk in toInflate)
+            foreach (var sk in candidates)
             {
+                Color meshColor = sk.PresetColor ?? _modelBaseColor;
+
+                if (sk.PresetKey == "Sphere")
+                {
+                    TeddyMesh sphere = CreateSphereMeshFrom2DStroke(sk.Points, vp, meshColor);
+                    _sceneMeshes.Add(sphere);
+                    _selectedMesh = sphere;
+                    _selectedSurfaceLine = null;
+                    createdCount++;
+                    lastMsg = $"Khối Cầu 3D chuẩn tròn ({sphere.Vertices.Count} đỉnh, {sphere.Triangles.Count} mặt)";
+                    consumed.Add(sk);
+                    continue;
+                }
+
+                if (sk.PresetKey == "Cube")
+                {
+                    TeddyMesh cube = CreateCubeMeshFrom2DStroke(sk.Points, vp, meshColor);
+                    _sceneMeshes.Add(cube);
+                    _selectedMesh = cube;
+                    _selectedSurfaceLine = null;
+                    createdCount++;
+                    lastMsg = "Khối Hộp 3D (Subdivided Cube)";
+                    consumed.Add(sk);
+                    continue;
+                }
+
                 if (TeddyInflationEngine.TryCreateMeshFromStroke(
                     sk.Points,
                     _camera,
-                    _viewportPanel.ClientSize,
-                    _modelBaseColor,
+                    vp,
+                    meshColor,
                     out TeddyMesh? created,
                     out string msg) && created != null)
                 {
+                    if (sk.PresetKey == "TeddySilhouette" || sk.PresetKey == "Cherry" || sk.PresetKey == "Snake")
+                    {
+                        ApplyPresetPaintingViewAligned(created, sk.PresetKey);
+                    }
+
                     _sceneMeshes.Add(created);
                     _selectedMesh = created;
                     _selectedSurfaceLine = null;
@@ -1070,23 +1098,118 @@ namespace PaintLike.Teddy
                 }
                 else
                 {
-                    lastMsg = msg;
+                    failedCount++;
+                    lastFailMsg = msg;
                 }
             }
 
             if (createdCount > 0)
             {
                 foreach (var c in consumed) ConsumeSketchStroke(c);
+                if (_selectedMesh != null)
+                {
+                    _modelBaseColor = _selectedMesh.BaseColor;
+                    _btnModelColor.Invalidate();
+                }
                 SetAlgorithmStepView(TeddyAlgorithmStepView.Final3DModel);
                 SyncCameraPivotToActiveShape();
                 UpdateDeleteButtonState();
-                UpdateStatus($"Đã tạo {createdCount} khối 3D thành công: {lastMsg}");
+                string summary = createdCount == 1
+                    ? $"Đã dựng 1 khối 3D thành công: {lastMsg}"
+                    : $"Đã dựng đồng loạt {createdCount} khối 3D độc lập thành công!";
+                if (failedCount > 0)
+                    summary += $" (Bỏ qua {failedCount} nét 2D không hợp lệ: {lastFailMsg})";
+                UpdateStatus(summary);
                 _viewportPanel.Invalidate();
             }
             else
             {
                 RestoreFromUndoWithoutRedo();
-                UpdateStatus($"Không thể tạo khối 3D: {lastMsg}");
+                UpdateStatus($"Không thể tạo khối 3D: {lastFailMsg}");
+            }
+        }
+
+        private TeddyMesh CreateSphereMeshFrom2DStroke(IReadOnlyList<PointF> stroke2D, Size viewport, Color color)
+        {
+            float minX = float.MaxValue, minY = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue;
+            foreach (var p in stroke2D)
+            {
+                if (p.X < minX) minX = p.X;
+                if (p.Y < minY) minY = p.Y;
+                if (p.X > maxX) maxX = p.X;
+                if (p.Y > maxY) maxY = p.Y;
+            }
+
+            PointF center2D = new PointF((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
+            Vector3 centerWorld = _camera.ScreenToWorldPoint(center2D, viewport, 0f);
+            float radius = Math.Clamp(
+                MathF.Max(maxX - minX, maxY - minY) * 0.5f / MathF.Max(0.35f, _camera.Zoom),
+                35f,
+                240f);
+
+            var sphere = TeddyMesh.CreateSphere(radius, 32, 20);
+            sphere.BaseColor = color;
+            sphere.Translate(centerWorld);
+
+            // Gắn kèm DebugInfo từ đường tròn 2D để người dùng vẫn xem được minh họa 5 bước giải thuật (Hình 13–15)
+            if (TeddyInflationEngine.TryCreateMeshFromStroke(stroke2D, _camera, viewport, color, out TeddyMesh? debugRef, out _) && debugRef != null)
+            {
+                sphere.DebugInfo = debugRef.DebugInfo;
+            }
+
+            return sphere;
+        }
+
+        private TeddyMesh CreateCubeMeshFrom2DStroke(IReadOnlyList<PointF> stroke2D, Size viewport, Color color)
+        {
+            float minX = float.MaxValue, minY = float.MaxValue;
+            float maxX = float.MinValue, maxY = float.MinValue;
+            foreach (var p in stroke2D)
+            {
+                if (p.X < minX) minX = p.X;
+                if (p.Y < minY) minY = p.Y;
+                if (p.X > maxX) maxX = p.X;
+                if (p.Y > maxY) maxY = p.Y;
+            }
+
+            PointF center2D = new PointF((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
+            Vector3 centerWorld = _camera.ScreenToWorldPoint(center2D, viewport, 0f);
+            float halfSize = Math.Clamp(
+                MathF.Max(maxX - minX, maxY - minY) * 0.5f / MathF.Max(0.35f, _camera.Zoom),
+                35f,
+                220f);
+
+            var cube = TeddyMesh.CreateCube(halfSize, 6);
+            cube.BaseColor = color;
+            cube.Translate(centerWorld);
+
+            Quaternion cubeTilt = Quaternion.Normalize(
+                Quaternion.Conjugate(_camera.Rotation) * Quaternion.CreateFromYawPitchRoll(0.32f, -0.22f, 0f));
+            cube.SetLocalRotationAroundPivot(cubeTilt, centerWorld);
+            return cube;
+        }
+
+        private void ApplyPresetPaintingViewAligned(TeddyMesh mesh, string presetKey)
+        {
+            if (mesh == null || mesh.IsEmpty) return;
+
+            bool needsAlign = MathF.Abs(_camera.Rotation.W) < 0.9999f;
+            Vector3 pivot = Vector3.Zero;
+            Quaternion origLocalRot = mesh.LocalRotation;
+
+            if (needsAlign && ComputeMeshesBounds(new[] { mesh }, out Vector3 min, out Vector3 max))
+            {
+                pivot = (min + max) * 0.5f;
+                mesh.RotateAroundPivot(_camera.Rotation, pivot);
+            }
+
+            TeddyMeshOptimizer.ApplyPaperPresetPainting(mesh, presetKey);
+
+            if (needsAlign)
+            {
+                mesh.RotateAroundPivot(Quaternion.Conjugate(_camera.Rotation), pivot);
+                mesh.LocalRotation = origLocalRot;
             }
         }
 
@@ -1331,12 +1454,8 @@ namespace PaintLike.Teddy
         {
             if (_sceneMeshes.Count == 0)
             {
-                var sphere = TeddyMesh.CreateSphere(135f, 30, 20);
-                sphere.BaseColor = _modelBaseColor;
-                _sceneMeshes.Add(sphere);
-                _selectedMesh = sphere;
-                _camera.Reset();
-                _camera.Rotation = Quaternion.CreateFromYawPitchRoll(0.35f, -0.22f, 0f);
+                UpdateStatus("Chưa có khối 3D nào để cắt! Hãy vẽ hoặc triển khai hình 2D rồi bấm [Tạo Khối 3D] trước khi cắt.");
+                return;
             }
 
             var sketch = GetTargetSketchStroke();
@@ -1703,55 +1822,32 @@ namespace PaintLike.Teddy
             _viewportPanel.Invalidate();
         }
 
-        private void LoadPrimitiveMesh(TeddyMesh primitive, string message)
-        {
-            if (_sceneMeshes.Count > 0)
-                PushUndoState();
-
-            _sceneMeshes.Clear();
-            _sceneMeshes.Add(primitive);
-            _selectedMesh = primitive;
-            _selectedSurfaceLine = null;
-            _modelBaseColor = primitive.BaseColor;
-            _camera.Reset();
-            _camera.Rotation = Quaternion.CreateFromYawPitchRoll(0.35f, -0.25f, 0f);
-            _btnModelColor.Invalidate();
-            SetAlgorithmStepView(TeddyAlgorithmStepView.Final3DModel);
-            UpdateDeleteButtonState();
-            UpdateStatus(message);
-            _viewportPanel.Invalidate();
-        }
-
-        private void RunPaperPreset(string presetKey, Color presetColor, string displayName)
+        private void DeployPresetAs2DSketch(string presetKey, Color presetColor, string displayName)
         {
             Size vp = _viewportPanel.ClientSize;
             if (vp.Width < 100 || vp.Height < 100) vp = new Size(1000, 560);
 
-            _camera.Reset();
-            _modelBaseColor = presetColor;
-            _btnModelColor.Invalidate();
+            PushUndoState();
+
+            _sketchToolMode = Sketch2DToolMode.DrawStroke;
+            _activeCutPattern = TeddyCutPattern.Freehand;
+            _algorithmStepView = TeddyAlgorithmStepView.Final3DModel;
+            foreach (var kvp in _stepViewButtons)
+            {
+                UITheme.SetButtonSelected(kvp.Value, kvp.Key == TeddyAlgorithmStepView.Final3DModel);
+            }
 
             List<PointF> sampleStroke = TeddyMeshOptimizer.CreatePaperSampleStroke(presetKey, vp);
-            if (TeddyInflationEngine.TryCreateMeshFromStroke(
-                sampleStroke,
-                _camera,
-                vp,
-                _modelBaseColor,
-                out TeddyMesh? created,
-                out string msg) && created != null)
-            {
-                if (_sceneMeshes.Count > 0 || _sketchLayer.HasStrokes) PushUndoState();
-                _sceneMeshes.Clear();
-                TeddyMeshOptimizer.ApplyPaperPresetPainting(created, presetKey);
-                _sceneMeshes.Add(created);
-                _selectedMesh = created;
-                _selectedSurfaceLine = null;
-                _camera.Rotation = Quaternion.CreateFromYawPitchRoll(0.32f, -0.18f, 0f);
-                SetAlgorithmStepView(TeddyAlgorithmStepView.Final3DModel);
-                UpdateDeleteButtonState();
-                UpdateStatus($"Đã dựng mẫu bài báo '{displayName}': {msg} Bấm phím 1 → 5 để xem từng bước giải thuật!");
-                _viewportPanel.Invalidate();
-            }
+            _sketchLayer.AddPresetStroke(sampleStroke, presetColor, presetColor, presetKey, displayName, vp);
+
+            _selectedMesh = null;
+            _selectedSurfaceLine = null;
+            SyncCameraPivotToActiveShape();
+            Update2DToolSelection();
+            UpdateCutPatternToolbarState();
+            UpdateDeleteButtonState();
+            UpdateStatus($"Đã triển khai hình vẽ 2D [{displayName}] (chưa dựng 3D). Bấm [Tạo Khối 3D] để chuyển thành mô hình 3D!");
+            _viewportPanel.Invalidate();
         }
 
         private void SetAlgorithmStepView(TeddyAlgorithmStepView step)

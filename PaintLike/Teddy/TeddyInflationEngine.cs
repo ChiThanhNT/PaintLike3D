@@ -247,30 +247,47 @@ namespace PaintLike.Teddy
 
             // Lưu các quạt tam giác (Fan regions) sinh ra sau khi cắt tỉa từ từng Terminal triangle (Hình 14)
             var fanConnections = new List<(int SpineVertex, int BoundA, int BoundB)>();
+            var fanDedup = new HashSet<(int, int, int)>();
             var encounteredJunctions = new HashSet<int>();
             var junctionConsumedEdges = new HashSet<(int, int)>();
 
-            bool AreAllVerticesInSemicircle(int edgeU, int edgeV, List<int> verts, int extraVert)
+            // [TV1-06] Kiểm tra Nửa Đường Tròn Có Hướng (Oriented Semicircle Criterion - Prasad [21], Hình 14):
+            // Mọi đỉnh trong vùng X phải đồng thời nằm trong bán kính R VÀ nằm cùng nửa mặt phẳng với vùng X đối với cạnh trong (edgeU, edgeV).
+            bool AreAllVerticesInOrientedSemicircle(int edgeU, int edgeV, int insideRefVert, List<int> verts, int extraVert)
             {
-                Vector2 mid = 0.5f * (vertices2D[edgeU] + vertices2D[edgeV]);
-                float radius = 0.5f * Vector2.Distance(vertices2D[edgeU], vertices2D[edgeV]);
+                Vector2 pu = vertices2D[edgeU];
+                Vector2 pv = vertices2D[edgeV];
+                Vector2 mid = 0.5f * (pu + pv);
+                float radius = 0.5f * Vector2.Distance(pu, pv);
+                if (radius < 1e-5f) return false;
                 float maxDist = radius * 1.02f;
+
+                float refSide = insideRefVert >= 0 ? Delaunay2D.SignedArea2(pu, pv, vertices2D[insideRefVert]) : 0f;
+                float sideEps = 1e-3f * radius * radius;
+
+                bool CheckVertex(int bv)
+                {
+                    if (bv < 0 || bv == edgeU || bv == edgeV) return true;
+                    Vector2 p = vertices2D[bv];
+                    if (Vector2.Distance(p, mid) > maxDist)
+                        return false;
+
+                    if (MathF.Abs(refSide) > 1e-5f)
+                    {
+                        float s = Delaunay2D.SignedArea2(pu, pv, p);
+                        if (s * refSide < -sideEps)
+                            return false;
+                    }
+                    return true;
+                }
 
                 for (int k = 0; k < verts.Count; k++)
                 {
-                    int bv = verts[k];
-                    if (bv == edgeU || bv == edgeV) continue;
-                    if (Vector2.Distance(vertices2D[bv], mid) > maxDist)
+                    if (!CheckVertex(verts[k]))
                         return false;
                 }
 
-                if (extraVert >= 0 && extraVert != edgeU && extraVert != edgeV)
-                {
-                    if (Vector2.Distance(vertices2D[extraVert], mid) > maxDist)
-                        return false;
-                }
-
-                return true;
+                return CheckVertex(extraVert);
             }
 
             for (int tIdx = 0; tIdx < triCount; tIdx++)
@@ -291,10 +308,11 @@ namespace PaintLike.Teddy
                 int currTriIdx = tIdx;
                 int currU = u;
                 int currV = v;
+                int currInsideRef = tipVert;
                 int candidateNextTri = nextTriIdx;
                 int stopJunctionTri = -1;
 
-                if (!AreAllVerticesInSemicircle(currU, currV, regionBoundaryVerts, -1))
+                if (!AreAllVerticesInOrientedSemicircle(currU, currV, currInsideRef, regionBoundaryVerts, -1))
                 {
                     Vector2 mid0 = 0.5f * (vertices2D[currU] + vertices2D[currV]);
                     float radius0 = 0.5f * Vector2.Distance(vertices2D[currU], vertices2D[currV]);
@@ -307,7 +325,7 @@ namespace PaintLike.Teddy
                         Tri2D nextTri = cdtTris[candidateNextTri];
                         if (nextTri.Category == TriangleCategory.Junction)
                         {
-                            // Chạm tam giác ngã ba Junction -> Hình 14e-f (kể cả khi nhánh khác đã chạm Junction này)
+                            // Chạm tam giác ngã ba Junction -> Hình 14e-f (phối hợp nhiều nhánh Terminal hội tụ cùng Junction)
                             stopJunctionTri = candidateNextTri;
                             pruned[candidateNextTri] = true;
                             encounteredJunctions.Add(candidateNextTri);
@@ -320,29 +338,31 @@ namespace PaintLike.Teddy
 
                         if (nextTri.Category == TriangleCategory.Terminal)
                         {
-                            // Toàn bộ đa giác chỉ gồm vài tam giác và chạm đáy bên kia
+                            // Hai tam giác Terminal chạm nhau qua cạnh trong chung (đa giác hình viên nang / oval ngắn)
                             pruned[candidateNextTri] = true;
                             AddBoundaryEdgesOfTri(nextTri, boundaryCount, regionBoundaryEdges);
                             break;
                         }
 
-                        // Sleeve triangle: kiểm tra nửa đường tròn trên cạnh trong kế tiếp TRƯỚC khi gộp (Hình 14b-d)
+                        // Sleeve triangle: kiểm tra nửa đường tròn có hướng trên cạnh trong kế tiếp TRƯỚC khi gộp (Hình 14b-d)
                         int oppVert = nextTri.GetOppositeVertex(currU, currV);
-                        int candU, candV;
+                        int candU, candV, nextInsideRef;
                         if (Delaunay2D.IsBoundaryEdge(currU, oppVert, boundaryCount))
                         {
-                            // (currU, oppVert) là cạnh biên => cạnh trong mới là (oppVert, currV)
+                            // (currU, oppVert) là cạnh biên => cạnh trong mới là (oppVert, currV), đỉnh currU nằm trong vùng X
                             candU = oppVert;
                             candV = currV;
+                            nextInsideRef = currU;
                         }
                         else
                         {
-                            // (currV, oppVert) là cạnh biên => cạnh trong mới là (currU, oppVert)
+                            // (currV, oppVert) là cạnh biên => cạnh trong mới là (currU, oppVert), đỉnh currV nằm trong vùng X
                             candU = currU;
                             candV = oppVert;
+                            nextInsideRef = currV;
                         }
 
-                        if (!AreAllVerticesInSemicircle(candU, candV, regionBoundaryVerts, oppVert))
+                        if (!AreAllVerticesInOrientedSemicircle(candU, candV, nextInsideRef, regionBoundaryVerts, oppVert))
                         {
                             Vector2 stopMid = 0.5f * (vertices2D[currU] + vertices2D[currV]);
                             float stopRadius = 0.5f * Vector2.Distance(vertices2D[currU], vertices2D[currV]);
@@ -350,7 +370,7 @@ namespace PaintLike.Teddy
                             break;
                         }
 
-                        // Nửa đường tròn đạt chuẩn -> gộp chính thức Sleeve này vào vùng
+                        // Nửa đường tròn có hướng đạt chuẩn -> gộp chính thức Sleeve này vào vùng X
                         pruned[candidateNextTri] = true;
                         if (!regionBoundaryVerts.Contains(oppVert))
                             regionBoundaryVerts.Add(oppVert);
@@ -358,6 +378,7 @@ namespace PaintLike.Teddy
 
                         currU = candU;
                         currV = candV;
+                        currInsideRef = nextInsideRef;
                         currTriIdx = candidateNextTri;
                         candidateNextTri = FindNeighborAcrossEdge(cdtTris, currTriIdx, currU, currV);
                     }
@@ -368,10 +389,14 @@ namespace PaintLike.Teddy
                     ? GetOrCreateJunctionCenter(stopJunctionTri)
                     : GetOrCreateEdgeMidpoint(currU, currV);
 
-                // Tạo các tam giác hình quạt (Fan triangles) nối từ fanCenterVertex tới mọi cạnh biên trong vùng đã cắt tỉa
+                // Tạo các tam giác hình quạt (Fan triangles) khử trùng lặp nối từ fanCenterVertex tới mọi cạnh biên vùng X
                 foreach (var bEdge in regionBoundaryEdges)
                 {
-                    fanConnections.Add((fanCenterVertex, bEdge.A, bEdge.B));
+                    var key = (fanCenterVertex, Math.Min(bEdge.A, bEdge.B), Math.Max(bEdge.A, bEdge.B));
+                    if (fanDedup.Add(key))
+                    {
+                        fanConnections.Add((fanCenterVertex, bEdge.A, bEdge.B));
+                    }
                 }
             }
 
@@ -417,10 +442,18 @@ namespace PaintLike.Teddy
 
                     spineEdges.Add((m1, m2));
 
-                    // Chia Sleeve triangle thành 3 tam giác nối giữa Spine (m1, m2) và biên (b1, b2, vOpp)
+                    // [TV1-06] Chia Sleeve triangle thành 3 tam giác với đường chéo tứ giác (m1, b1, b2, m2) tối ưu Delaunay
                     baseTriangles.Add(new BaseTri2D(vOpp, m1, m2));
-                    baseTriangles.Add(new BaseTri2D(m1, b1, b2));
-                    baseTriangles.Add(new BaseTri2D(m1, b2, m2));
+                    if (Delaunay2D.PreferDiagonalAC(vertices2D[m1], vertices2D[b1], vertices2D[b2], vertices2D[m2]))
+                    {
+                        baseTriangles.Add(new BaseTri2D(m1, b1, b2));
+                        baseTriangles.Add(new BaseTri2D(m1, b2, m2));
+                    }
+                    else
+                    {
+                        baseTriangles.Add(new BaseTri2D(m1, b1, m2));
+                        baseTriangles.Add(new BaseTri2D(b1, b2, m2));
+                    }
                 }
                 else if (tri.Category == TriangleCategory.Junction)
                 {
@@ -442,21 +475,26 @@ namespace PaintLike.Teddy
                 }
             }
 
-            // Trường hợp đặc biệt: Đa giác tròn đều khiến toàn bộ tam giác chụm về 1 tâm duy nhất
-            if (vertices2D.Count == boundaryCount)
+            // Trường hợp đặc biệt: Đa giác tròn / oval / giọt nước khiến toàn bộ tam giác cắt tỉa về 1 tâm duy nhất (không có cạnh Spine).
+            // Đưa đỉnh tâm về đúng trọng tâm hình học của biên 2D thay vì tâm lệch của tam giác Junction / dây cung CDT ngẫu nhiên!
+            if (vertices2D.Count == boundaryCount || spineEdges.Count == 0)
             {
-                Vector2 centroid = Vector2.Zero;
-                for (int i = 0; i < boundaryCount; i++) centroid += vertices2D[i];
-                centroid /= boundaryCount;
-
-                int cIdx = vertices2D.Count;
-                vertices2D.Add(centroid);
-                isSpineVertex.Add(true);
-
-                baseTriangles.Clear();
-                for (int i = 0; i < boundaryCount; i++)
+                Vector2 centroid = ComputePolygonCentroid(vertices2D, boundaryCount);
+                if (IsPointInsidePolygon(centroid, vertices2D, boundaryCount))
                 {
-                    baseTriangles.Add(new BaseTri2D(cIdx, i, (i + 1) % boundaryCount));
+                    vertices2D.RemoveRange(boundaryCount, vertices2D.Count - boundaryCount);
+                    isSpineVertex.RemoveRange(boundaryCount, isSpineVertex.Count - boundaryCount);
+
+                    int cIdx = vertices2D.Count;
+                    vertices2D.Add(centroid);
+                    isSpineVertex.Add(true);
+
+                    spineEdges.Clear();
+                    baseTriangles.Clear();
+                    for (int i = 0; i < boundaryCount; i++)
+                    {
+                        baseTriangles.Add(new BaseTri2D(cIdx, i, (i + 1) % boundaryCount));
+                    }
                 }
             }
 
@@ -483,15 +521,31 @@ namespace PaintLike.Teddy
                 }
             }
 
+            bool isSingleCenterBlob = spineEdges.Count == 0 && (vertices2D.Count - boundaryCount) == 1;
             for (int i = boundaryCount; i < vertices2D.Count; i++)
             {
                 var bSet = connectedBoundaryVerts[i];
                 if (bSet.Count > 0)
                 {
                     float sumDist = 0f;
+                    float minDist = float.MaxValue;
+                    float maxDist = 0f;
                     foreach (int bIdx in bSet)
-                        sumDist += Vector2.Distance(vertices2D[i], vertices2D[bIdx]);
-                    spineHeights[i] = (sumDist / bSet.Count) * 0.92f;
+                    {
+                        float d = Vector2.Distance(vertices2D[i], vertices2D[bIdx]);
+                        sumDist += d;
+                        if (d < minDist) minDist = d;
+                        if (d > maxDist) maxDist = d;
+                    }
+                    float avgDist = sumDist / bSet.Count;
+                    float heightFactor = 0.94f;
+                    if (isSingleCenterBlob && maxDist > 1e-4f)
+                    {
+                        // Hình tròn / gần tròn: giữ tỉ lệ 1:1:1 để phồng ra khối cầu tròn đều theo cả 3 trục X, Y, Z
+                        float roundness = Math.Clamp((minDist / maxDist - 0.65f) / 0.25f, 0f, 1f);
+                        heightFactor = 0.94f + 0.06f * roundness;
+                    }
+                    spineHeights[i] = avgDist * heightFactor;
                 }
                 else
                 {
@@ -610,47 +664,67 @@ namespace PaintLike.Teddy
                 }
             }
 
-            // Số bậc chia cung 1/4 elip từ trục Spine ra biên (K = 4 tạo mặt cắt gồm 8 đoạn tròn đều)
-            const int K = 4;
+            // Số bậc chia cung 1/4 elip theo góc đều từ trục Spine ra biên (K = 5 tạo mặt cắt 10 đoạn tròn mượt, không bị gờ sắc ở đường xích đạo)
+            const int K = 5;
 
-            // Bảng hàn đỉnh (Vertex Welding) theo khóa tọa độ lượng tử hóa để mặt trên và mặt dưới khâu kín tuyệt đối
-            var weldMapFront = new Dictionary<(int, int), int>();
-            var weldMapBack = new Dictionary<(int, int), int>();
+            // [TV1-06] Khâu đỉnh bằng Khóa Topo Chính Xác (Topological Vertex Sewing) thay cho lượng tử hóa tọa độ (Round(xy*10)):
+            // Bảo toàn tuyệt đối các cổ/cuống hẹp (Cherry, Snake, tai Teddy) không bị hàn nhầm và không bao giờ nứt cạnh chia sẻ.
+            var topoMapFront = new Dictionary<(byte Kind, int A, int B, int C, int W0, int W1), int>();
+            var topoMapBack = new Dictionary<(byte Kind, int A, int B, int C, int W0, int W1), int>();
 
-            int GetOrAdd3DVertex(Vector2 xy, float zAbs, bool isBackSide)
+            (byte Kind, int A, int B, int C, int W0, int W1) MakeTopoKey(int triIdx, int iA, int iB, int iC, int r, int c, int d)
             {
-                int qx = (int)MathF.Round(xy.X * 10f);
-                int qy = (int)MathF.Round(xy.Y * 10f);
-                var key = (qx, qy);
+                if (r == K) return (0, iA, -1, -1, 0, 0);
+                if (c == K) return (0, iB, -1, -1, 0, 0);
+                if (d == K) return (0, iC, -1, -1, 0, 0);
 
-                // Nếu nằm ngay trên đường biên (zAbs == 0), mặt trước và mặt sau dùng chung đỉnh biên!
-                if (zAbs <= 1e-3f)
+                if (d == 0)
                 {
-                    if (weldMapFront.TryGetValue(key, out int sharedIdx))
+                    return iA < iB ? ((byte)1, iA, iB, -1, r, c) : ((byte)1, iB, iA, -1, c, r);
+                }
+                if (r == 0)
+                {
+                    return iB < iC ? ((byte)1, iB, iC, -1, c, d) : ((byte)1, iC, iB, -1, d, c);
+                }
+                if (c == 0)
+                {
+                    return iA < iC ? ((byte)1, iA, iC, -1, r, d) : ((byte)1, iC, iA, -1, d, r);
+                }
+
+                return (2, triIdx, r, c, 0, 0);
+            }
+
+            int GetOrAddTopo3DVertex((byte Kind, int A, int B, int C, int W0, int W1) topoKey, Vector2 xy, float zAbs, bool isOnSilhouetteBoundary, bool isBackSide)
+            {
+                // Nếu nằm trên biên hình bóng (z == 0, tất cả đỉnh tham gia đều là đỉnh biên), mặt trước (+Z) và mặt sau (-Z) dùng chung đỉnh Topo!
+                if (isOnSilhouetteBoundary || zAbs <= 1e-4f)
+                {
+                    if (topoMapFront.TryGetValue(topoKey, out int sharedIdx))
                         return sharedIdx;
 
                     Vector3 worldPt = Vector3.Transform(new Vector3(xy.X, xy.Y, 0f), invRot);
                     int newIdx = mesh.Vertices.Count;
                     mesh.Vertices.Add(worldPt);
-                    weldMapFront[key] = newIdx;
-                    weldMapBack[key] = newIdx;
+                    topoMapFront[topoKey] = newIdx;
+                    topoMapBack[topoKey] = newIdx;
                     return newIdx;
                 }
 
-                var targetMap = isBackSide ? weldMapBack : weldMapFront;
-                if (targetMap.TryGetValue(key, out int existingIdx))
+                var targetMap = isBackSide ? topoMapBack : topoMapFront;
+                if (targetMap.TryGetValue(topoKey, out int existingIdx))
                     return existingIdx;
 
                 float signedZ = isBackSide ? -zAbs : zAbs;
                 Vector3 pos3D = Vector3.Transform(new Vector3(xy.X, xy.Y, signedZ), invRot);
                 int idx = mesh.Vertices.Count;
                 mesh.Vertices.Add(pos3D);
-                targetMap[key] = idx;
+                targetMap[topoKey] = idx;
                 return idx;
             }
 
-            foreach (var bt in baseTriangles)
+            for (int btIdx = 0; btIdx < baseTriangles.Count; btIdx++)
             {
+                var bt = baseTriangles[btIdx];
                 int iA = bt.V0;
                 int iB = bt.V1;
                 int iC = bt.V2;
@@ -679,27 +753,48 @@ namespace PaintLike.Teddy
                         float wB = c / (float)K;
                         float wC = d / (float)K;
 
-                        Vector2 xy = wA * pA + wB * pB + wC * pC;
-
-                        // Tính tổng trọng số của các đỉnh thuộc Spine và độ cao cơ sở nội suy
+                        // Tham số hóa cung 1/4 elip chuẩn theo góc theta = (pi/2) * wBound:
+                        // xy = Lerp(spinePt, boundPt, sin(theta)), z = baseH * cos(theta)
+                        // Đảm bảo x^2 + y^2 + z^2 = R^2 chính xác cho hình tròn và mượt liên tục trên mọi cạnh chung!
                         float wSpine = 0f;
                         float weightedSpineH = 0f;
+                        Vector2 spineWeightedPos = Vector2.Zero;
+                        Vector2 boundWeightedPos = Vector2.Zero;
 
-                        if (isSpineVertex[iA]) { wSpine += wA; weightedSpineH += wA * spineHeights[iA]; }
-                        if (isSpineVertex[iB]) { wSpine += wB; weightedSpineH += wB * spineHeights[iB]; }
-                        if (isSpineVertex[iC]) { wSpine += wC; weightedSpineH += wC * spineHeights[iC]; }
+                        if (isSpineVertex[iA]) { wSpine += wA; weightedSpineH += wA * spineHeights[iA]; spineWeightedPos += wA * pA; }
+                        else { boundWeightedPos += wA * pA; }
+                        if (isSpineVertex[iB]) { wSpine += wB; weightedSpineH += wB * spineHeights[iB]; spineWeightedPos += wB * pB; }
+                        else { boundWeightedPos += wB * pB; }
+                        if (isSpineVertex[iC]) { wSpine += wC; weightedSpineH += wC * spineHeights[iC]; spineWeightedPos += wC * pC; }
+                        else { boundWeightedPos += wC * pC; }
 
+                        float wBound = Math.Clamp(1.0f - wSpine, 0f, 1f);
+                        bool isOnBoundary = wSpine <= 1e-6f;
+                        Vector2 xy;
                         float zElevation = 0f;
-                        if (wSpine > 1e-4f)
+
+                        if (isOnBoundary)
                         {
+                            xy = boundWeightedPos;
+                        }
+                        else if (wBound <= 1e-6f)
+                        {
+                            xy = spineWeightedPos / wSpine;
+                            zElevation = weightedSpineH / wSpine;
+                        }
+                        else
+                        {
+                            Vector2 spinePt = spineWeightedPos / wSpine;
+                            Vector2 boundPt = boundWeightedPos / wBound;
                             float baseH = weightedSpineH / wSpine;
-                            float wBound = Math.Clamp(1.0f - wSpine, 0f, 1f);
-                            // Phương trình cung 1/4 hình elip (Quarter Oval - Hình 15c): Z = H * sqrt(1 - r^2)
-                            zElevation = baseH * MathF.Sqrt(MathF.Max(0f, 1.0f - wBound * wBound));
+                            float theta = (MathF.PI * 0.5f) * wBound;
+                            xy = Vector2.Lerp(spinePt, boundPt, MathF.Sin(theta));
+                            zElevation = baseH * MathF.Cos(theta);
                         }
 
-                        gridFront[r, c] = GetOrAdd3DVertex(xy, zElevation, false);
-                        gridBack[r, c] = GetOrAdd3DVertex(xy, zElevation, true);
+                        var topoKey = MakeTopoKey(btIdx, iA, iB, iC, r, c, d);
+                        gridFront[r, c] = GetOrAddTopo3DVertex(topoKey, xy, zElevation, isOnBoundary, false);
+                        gridBack[r, c] = GetOrAddTopo3DVertex(topoKey, xy, zElevation, isOnBoundary, true);
                     }
                 }
 
@@ -820,6 +915,43 @@ namespace PaintLike.Teddy
             b1 = tri.V0;
             b2 = tri.V1;
             vOpp = tri.V2;
+        }
+
+        private static Vector2 ComputePolygonCentroid(List<Vector2> poly, int count)
+        {
+            double area2 = 0.0;
+            double cx = 0.0;
+            double cy = 0.0;
+            for (int i = 0; i < count; i++)
+            {
+                Vector2 p0 = poly[i];
+                Vector2 p1 = poly[(i + 1) % count];
+                double cross = (double)p0.X * p1.Y - (double)p1.X * p0.Y;
+                area2 += cross;
+                cx += (p0.X + p1.X) * cross;
+                cy += (p0.Y + p1.Y) * cross;
+            }
+
+            if (Math.Abs(area2) > 1e-4)
+                return new Vector2((float)(cx / (3.0 * area2)), (float)(cy / (3.0 * area2)));
+
+            Vector2 mean = Vector2.Zero;
+            for (int i = 0; i < count; i++) mean += poly[i];
+            return mean / Math.Max(1, count);
+        }
+
+        private static bool IsPointInsidePolygon(Vector2 pt, List<Vector2> poly, int count)
+        {
+            bool inside = false;
+            for (int i = 0, j = count - 1; i < count; j = i++)
+            {
+                Vector2 pi = poly[i];
+                Vector2 pj = poly[j];
+                bool intersect = ((pi.Y > pt.Y) != (pj.Y > pt.Y)) &&
+                    (pt.X < (pj.X - pi.X) * (pt.Y - pi.Y) / (pj.Y - pi.Y + 1e-12f) + pi.X);
+                if (intersect) inside = !inside;
+            }
+            return inside;
         }
     }
 }

@@ -355,9 +355,52 @@ namespace PaintLike.Teddy
             return 0.5f * sum;
         }
 
-        private static float Cross2D(Vector2 o, Vector2 a, Vector2 b)
+        public static float SignedArea2(Vector2 o, Vector2 a, Vector2 b)
         {
             return (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X);
+        }
+
+        /// <summary>
+        /// [TV1-06] Chọn đường chéo tối ưu Delaunay cho tứ giác lồi (a, b, c, d) theo thứ tự CCW:
+        /// Trả về true nếu đường chéo (a, c) cho góc nhỏ nhất tốt hơn đường chéo (b, d).
+        /// </summary>
+        public static bool PreferDiagonalAC(Vector2 a, Vector2 b, Vector2 c, Vector2 d)
+        {
+            // Kiểm tra tính hợp lệ CCW cho cả hai cách chia
+            bool acValid = SignedArea2(a, b, c) > 1e-5f && SignedArea2(a, c, d) > 1e-5f;
+            bool bdValid = SignedArea2(b, c, d) > 1e-5f && SignedArea2(b, d, a) > 1e-5f;
+
+            if (acValid && !bdValid) return true;
+            if (bdValid && !acValid) return false;
+            if (!acValid && !bdValid) return true;
+
+            float minCosAC = MathF.Max(MaxCosAngle(a, b, c), MaxCosAngle(a, c, d));
+            float minCosBD = MathF.Max(MaxCosAngle(b, c, d), MaxCosAngle(b, d, a));
+            // Cos càng nhỏ -> góc lớn nhất càng nhỏ -> góc nhỏ nhất càng lớn (tối ưu Delaunay)
+            return minCosAC <= minCosBD;
+        }
+
+        private static float MaxCosAngle(Vector2 p0, Vector2 p1, Vector2 p2)
+        {
+            float c0 = AngleCos(p0, p1, p2);
+            float c1 = AngleCos(p1, p2, p0);
+            float c2 = AngleCos(p2, p0, p1);
+            return MathF.Max(c0, MathF.Max(c1, c2));
+        }
+
+        private static float AngleCos(Vector2 v, Vector2 a, Vector2 b)
+        {
+            Vector2 da = a - v;
+            Vector2 db = b - v;
+            float la = da.Length();
+            float lb = db.Length();
+            if (la < 1e-6f || lb < 1e-6f) return 1f;
+            return Math.Clamp(Vector2.Dot(da, db) / (la * lb), -1f, 1f);
+        }
+
+        private static float Cross2D(Vector2 o, Vector2 a, Vector2 b)
+        {
+            return SignedArea2(o, a, b);
         }
     }
 }

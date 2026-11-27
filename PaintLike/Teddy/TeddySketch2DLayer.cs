@@ -29,6 +29,8 @@ namespace PaintLike.Teddy
         public TeddyCutPattern CutPattern { get; set; } = TeddyCutPattern.Freehand;
         public Vector2 CutRemoveNormal { get; set; } = new Vector2(0, -1);
         public string Label { get; set; } = "Nét #1";
+        public string? PresetKey { get; set; } = null;
+        public Color? PresetColor { get; set; } = null;
 
         public void RecalculateProperties()
         {
@@ -62,7 +64,9 @@ namespace PaintLike.Teddy
                 IsSelfIntersecting = this.IsSelfIntersecting,
                 CutPattern = this.CutPattern,
                 CutRemoveNormal = this.CutRemoveNormal,
-                Label = this.Label
+                Label = this.Label,
+                PresetKey = this.PresetKey,
+                PresetColor = this.PresetColor
             };
         }
     }
@@ -141,6 +145,125 @@ namespace PaintLike.Teddy
             Strokes.Add(stroke);
             SelectedStroke = stroke;
             return stroke;
+        }
+
+        /// <summary>
+        /// Triển khai một hình mẫu (Khối Cầu, Khối Hộp, Gấu Teddy, Quả Cherry, Con Rắn) ở dạng nét phác thảo 2D thuần túy.
+        /// Nếu đã có nét 2D trùng vị trí tâm, tự động dịch ngang gọn gàng để không đè lên nhau.
+        /// </summary>
+        public SketchStroke2D? AddPresetStroke(
+            IReadOnlyList<PointF> points,
+            Color strokeColor,
+            Color presetColor,
+            string presetKey,
+            string displayName,
+            Size viewport)
+        {
+            if (points == null || points.Count < 3)
+                return null;
+
+            var pts = new List<PointF>(points.Count + 1);
+            foreach (var p in points) pts.Add(p);
+            if (StrokeProcessor.Distance(pts[0], pts[pts.Count - 1]) > 1.0f)
+                pts.Add(pts[0]);
+
+            ComputeBounds(pts, out float minX, out float minY, out float maxX, out float maxY);
+            PointF baseCenter = new PointF((minX + maxX) * 0.5f, (minY + maxY) * 0.5f);
+            float halfW = (maxX - minX) * 0.5f;
+            float halfH = (maxY - minY) * 0.5f;
+
+            // Tìm vị trí dịch chuyển gần nhất không trùng tâm với các nét 2D đã triển khai
+            var existingCenters = new List<PointF>(Strokes.Count);
+            foreach (var s in Strokes)
+            {
+                if (s.Points.Count < 2) continue;
+                ComputeBounds(s.Points, out float sMinX, out float sMinY, out float sMaxX, out float sMaxY);
+                existingCenters.Add(new PointF((sMinX + sMaxX) * 0.5f, (sMinY + sMaxY) * 0.5f));
+            }
+
+            PointF chosenOffset = PointF.Empty;
+            if (IsNearAnyCenter(baseCenter, existingCenters, 55f))
+            {
+                float stepX = MathF.Max(220f, halfW * 2.15f);
+                float stepY = MathF.Max(140f, halfH * 1.4f);
+                var offsets = new PointF[]
+                {
+                    new(stepX, 0f),
+                    new(-stepX, 0f),
+                    new(stepX * 1.85f, 0f),
+                    new(-stepX * 1.85f, 0f),
+                    new(0f, -stepY),
+                    new(0f, stepY),
+                    new(stepX, -stepY * 0.7f),
+                    new(-stepX, -stepY * 0.7f),
+                    new(stepX, stepY * 0.7f),
+                    new(-stepX, stepY * 0.7f)
+                };
+
+                float margin = 36f;
+                foreach (var off in offsets)
+                {
+                    PointF candCenter = new PointF(baseCenter.X + off.X, baseCenter.Y + off.Y);
+                    if (viewport.Width > 200 && viewport.Height > 200)
+                    {
+                        if (candCenter.X - halfW < margin || candCenter.X + halfW > viewport.Width - margin ||
+                            candCenter.Y - halfH < margin || candCenter.Y + halfH > viewport.Height - margin)
+                            continue;
+                    }
+                    if (!IsNearAnyCenter(candCenter, existingCenters, 55f))
+                    {
+                        chosenOffset = off;
+                        break;
+                    }
+                }
+            }
+
+            if (chosenOffset != PointF.Empty)
+            {
+                for (int i = 0; i < pts.Count; i++)
+                    pts[i] = new PointF(pts[i].X + chosenOffset.X, pts[i].Y + chosenOffset.Y);
+            }
+
+            var stroke = new SketchStroke2D
+            {
+                Points = pts,
+                StrokeColor = strokeColor,
+                StrokeWidth = 2.8f,
+                IsClosed = true,
+                IsSelfIntersecting = false,
+                CutPattern = TeddyCutPattern.Freehand,
+                PresetKey = presetKey,
+                PresetColor = presetColor,
+                Label = $"2D: {displayName} #{_nextStrokeSeq}"
+            };
+            _nextStrokeSeq++;
+
+            Strokes.Add(stroke);
+            SelectedStroke = stroke;
+            return stroke;
+        }
+
+        private static void ComputeBounds(IReadOnlyList<PointF> pts, out float minX, out float minY, out float maxX, out float maxY)
+        {
+            minX = float.MaxValue; minY = float.MaxValue;
+            maxX = float.MinValue; maxY = float.MinValue;
+            foreach (var p in pts)
+            {
+                if (p.X < minX) minX = p.X;
+                if (p.Y < minY) minY = p.Y;
+                if (p.X > maxX) maxX = p.X;
+                if (p.Y > maxY) maxY = p.Y;
+            }
+        }
+
+        private static bool IsNearAnyCenter(PointF pt, List<PointF> centers, float threshold)
+        {
+            foreach (var c in centers)
+            {
+                if (StrokeProcessor.Distance(pt, c) < threshold)
+                    return true;
+            }
+            return false;
         }
 
         public SketchStroke2D? HitTest(PointF pt, float threshold = 11f)
@@ -293,6 +416,16 @@ namespace PaintLike.Teddy
                 Color drawColor = stroke.IsSelfIntersecting
                     ? Color.FromArgb(225, 29, 72)
                     : stroke.StrokeColor;
+
+                // Nếu là hình mẫu 2D kín (chưa dựng 3D): Tô phủ trong suốt rất nhẹ để dễ nhận diện là hình vẽ 2D
+                if (!isCut && stroke.IsClosed && !string.IsNullOrEmpty(stroke.PresetKey) && stroke.Points.Count >= 3)
+                {
+                    Color tintBase = stroke.PresetColor ?? stroke.StrokeColor;
+                    using (SolidBrush fill2D = new SolidBrush(Color.FromArgb(28, tintBase)))
+                    {
+                        g.FillPolygon(fill2D, stroke.Points.ToArray());
+                    }
+                }
 
                 using (Pen p = new Pen(drawColor, stroke.StrokeWidth))
                 {
