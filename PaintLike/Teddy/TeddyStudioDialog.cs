@@ -422,7 +422,7 @@ namespace PaintLike.Teddy
             _btnApplyInflate3D.Click += (s, e) => ApplyInflate3DFromSketch();
 
             _btnApplyPaint3D = CreateRibbonButton(_panelActionBar, new Rectangle(290, 6, 104, 28), IconType.Rename, "Dán Nét 3D", ButtonVariant.Default,
-                "Chiếu các nét phác thảo 2D đang nằm trên bóng khối 3D xuống bề mặt vật thể (Mục 5.2)");
+                "Chiếu nét 2D bám sát từng cạnh tam giác bề mặt 3D & chặn nếp gấp khuất (TV2-06, Hình 16); vẽ gạch zíc-zắc (Scribble) để xóa nét mặt trước");
             _btnApplyPaint3D.Click += (s, e) => ApplySurfacePaintFromSketch();
 
             _btnApplyFillColor3D = CreateRibbonButton(_panelActionBar, new Rectangle(398, 6, 102, 28), IconType.ColorPalette, "Tô Vùng 3D", ButtonVariant.Default,
@@ -1214,20 +1214,20 @@ namespace PaintLike.Teddy
         }
 
         /// <summary>
-        /// Nút 2: [Dán Nét 3D] — Mục 5.2 (Chiếu nét phác thảo 2D bám lên bề mặt mô hình 3D).
+        /// Nút 2: [Dán Nét 3D] — TV2-06 & Mục 5.2 (Bounded Ray-Plane Adjacency Splicing, Fold Check & Depth-Checked Scribble Erase).
         /// </summary>
         private void ApplySurfacePaintFromSketch()
         {
             if (_sceneMeshes.Count == 0)
             {
-                UpdateStatus("Chưa có khối 3D nào trong không gian. Hãy bấm [Tạo Khối 3D] hoặc nạp Khối Cầu/Hộp trước!");
+                UpdateStatus("Chưa có khối 3D nào trong không gian. Hãy vẽ/triển khai hình 2D rồi bấm [Tạo Khối 3D] trước!");
                 return;
             }
 
             var sketch = GetTargetSketchStroke();
             if (sketch == null || sketch.Points.Count < 2)
             {
-                UpdateStatus("Hãy kéo Chuột Trái vẽ nét 2D lên bề mặt mô hình 3D trước khi bấm [Dán Nét 3D]!");
+                UpdateStatus("Hãy kéo Chuột Trái vẽ nét 2D lên bề mặt mô hình 3D (hoặc gạch zíc-zắc để xóa nét mặt trước) rồi bấm [Dán Nét 3D]!");
                 return;
             }
 
@@ -1238,28 +1238,27 @@ namespace PaintLike.Teddy
                 return;
             }
 
-            List<PointF> resampled = StrokeProcessor.ResampleUniform(sketch.Points, 6.5f, false);
-            var surfacePts = new List<Vector3>();
-            foreach (var pt in resampled)
-            {
-                if (TeddyRaycaster.RaycastMesh(targetMesh, pt, _camera, _viewportPanel.ClientSize, out _, out Vector3 hp, out Vector3 hn))
-                {
-                    surfacePts.Add(hp + hn * 1.2f);
-                }
-            }
-
-            if (surfacePts.Count < 2)
-            {
-                UpdateStatus("Nét vẽ 2D chưa nằm trên bề mặt khối 3D! Hãy xoay khối 3D bằng Chuột Phải hoặc vẽ lại nét 2D lên mặt khối.");
-                return;
-            }
-
             PushUndoState();
-            TeddySurfacePaintOp.AddSurfaceLine(targetMesh, surfacePts, _surfacePaintColor, 2.8f);
-            ConsumeSketchStroke(sketch);
-            UpdateDeleteButtonState();
-            UpdateStatus($"Đã dán nét vẽ 3D lên bề mặt ({surfacePts.Count} đoạn - Mục 5.2).");
-            _viewportPanel.Invalidate();
+            if (TeddySurfacePaintOp.TryPaintOrDepthEraseOnSurface(
+                targetMesh,
+                sketch.Points,
+                _camera,
+                _viewportPanel.ClientSize,
+                _surfacePaintColor,
+                2.8f,
+                out _,
+                out string paintMsg))
+            {
+                ConsumeSketchStroke(sketch);
+                UpdateDeleteButtonState();
+                UpdateStatus(paintMsg);
+                _viewportPanel.Invalidate();
+            }
+            else
+            {
+                RestoreFromUndoWithoutRedo();
+                UpdateStatus(paintMsg);
+            }
         }
 
         /// <summary>
@@ -1339,10 +1338,12 @@ namespace PaintLike.Teddy
             TeddyMesh? target = PickTargetMeshForStroke(sketch.Points);
             if (target == null) return;
 
-            var surfacePts = ProjectStrokeToMeshSurface(target, sketch.Points, closeLoop: true);
+            var surfacePts = ProjectStrokeToMeshSurface(target, sketch.Points, closeLoop: true, out string? ringDiag);
             if (surfacePts.Count < 5)
             {
-                UpdateStatus("Vòng khoanh 2D chưa bám đủ trên bề mặt khối 3D (cần ít nhất 5 điểm chạm mặt khối).");
+                UpdateStatus(string.IsNullOrEmpty(ringDiag)
+                    ? "Vòng khoanh 2D chưa bám đủ trên bề mặt khối 3D (cần ít nhất 5 điểm chạm mặt khối)."
+                    : ringDiag);
                 return;
             }
 
@@ -1663,16 +1664,34 @@ namespace PaintLike.Teddy
 
         private List<Vector3> ProjectStrokeToMeshSurface(TeddyMesh mesh, IReadOnlyList<PointF> stroke, bool closeLoop)
         {
-            List<PointF> resampled = StrokeProcessor.ResampleUniform(stroke, 7.5f, closeLoop);
-            var surfacePts = new List<Vector3>();
-            foreach (var pt in resampled)
+            return ProjectStrokeToMeshSurface(mesh, stroke, closeLoop, out _);
+        }
+
+        private List<Vector3> ProjectStrokeToMeshSurface(TeddyMesh mesh, IReadOnlyList<PointF> stroke, bool closeLoop, out string? diagnostic)
+        {
+            var status = TeddyRaycaster.TryProjectStrokeWithRayPlaneSplicing(
+                mesh,
+                stroke,
+                _camera,
+                _viewportPanel.ClientSize,
+                closeLoop,
+                out List<Vector3> splicedPts,
+                out _,
+                out string diag);
+
+            diagnostic = diag;
+
+            if (status == SurfaceProjectionStatus.Success && splicedPts.Count >= 5)
             {
-                if (TeddyRaycaster.RaycastMesh(mesh, pt, _camera, _viewportPanel.ClientSize, out _, out Vector3 hp, out Vector3 hn))
+                // Bỏ điểm đóng trùng đầu-cuối để tương thích với các hàm đóng vòng BaseRing (vòng tự nối cuối -> đầu)
+                if (closeLoop && splicedPts.Count > 5 && Vector3.Distance(splicedPts[0], splicedPts[splicedPts.Count - 1]) < 2.5f)
                 {
-                    surfacePts.Add(hp + hn * 1.2f);
+                    splicedPts.RemoveAt(splicedPts.Count - 1);
                 }
+                return splicedPts;
             }
-            return surfacePts;
+
+            return new List<Vector3>();
         }
 
         // =========================================================================

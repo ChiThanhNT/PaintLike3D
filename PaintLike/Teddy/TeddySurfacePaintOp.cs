@@ -76,21 +76,115 @@ namespace PaintLike.Teddy
                 return PaintingStrokeIntent.ErasePaintedStrokes;
             }
 
-            // 4. Nếu nét vẽ nằm trên bề mặt vật thể
+            // 4. Nếu nét vẽ nằm trên bề mặt vật thể -> sử dụng TV2-06 Bounded Ray-Plane Adjacency Splicing + Fold Check (Hình 16)
             if (projectedSurfacePoints.Count >= 3)
             {
                 bool isMostlyOnSurface = hitCount >= (int)(resampled.Count * 0.75f);
-                if (StrokeProcessor.IsClosedSurfaceStroke(rawStroke) && isMostlyOnSurface && projectedSurfacePoints.Count >= 6)
-                {
-                    return PaintingStrokeIntent.SelectExtrusionRing;
-                }
+                bool wantClosedRing = StrokeProcessor.IsClosedSurfaceStroke(rawStroke) && isMostlyOnSurface && projectedSurfacePoints.Count >= 6;
                 if (isMostlyOnSurface)
                 {
+                    var projStatus = TeddyRaycaster.TryProjectStrokeWithRayPlaneSplicing(
+                        mesh,
+                        rawStroke,
+                        camera,
+                        viewport,
+                        wantClosedRing,
+                        out List<Vector3> splicedPts,
+                        out _,
+                        out _);
+
+                    if (projStatus == SurfaceProjectionStatus.FoldDetected)
+                    {
+                        projectedSurfacePoints.Clear();
+                        return PaintingStrokeIntent.None;
+                    }
+
+                    if (projStatus == SurfaceProjectionStatus.Success && splicedPts.Count >= 2)
+                    {
+                        projectedSurfacePoints = splicedPts;
+                    }
+
+                    if (wantClosedRing && projectedSurfacePoints.Count >= 6)
+                    {
+                        return PaintingStrokeIntent.SelectExtrusionRing;
+                    }
                     return PaintingStrokeIntent.PaintOnSurface;
                 }
             }
 
             return PaintingStrokeIntent.None;
+        }
+
+        /// <summary>
+        /// [TV2-06] Thực thi dán nét 2D lên bề mặt 3D (Ray-Plane Adjacency Splicing + Fold Detection)
+        /// hoặc tự động xóa nét mặt trước có kiểm tra độ sâu nếu phát hiện cử chỉ gạch xóa (Scribble: sl/pl > 1.5).
+        /// </summary>
+        public static bool TryPaintOrDepthEraseOnSurface(
+            TeddyMesh mesh,
+            IReadOnlyList<PointF> rawStroke,
+            VirtualTrackballCamera camera,
+            Size viewport,
+            Color paintColor,
+            float paintWidth,
+            out bool wasEraseOperation,
+            out string statusMessage)
+        {
+            wasEraseOperation = false;
+            statusMessage = "";
+
+            if (mesh == null || mesh.IsEmpty || rawStroke == null || rawStroke.Count < 2)
+            {
+                statusMessage = "Không đủ dữ liệu nét 2D để dán lên bề mặt khối 3D.";
+                return false;
+            }
+
+            // Nếu trên khối đã có nét vẽ bề mặt và người dùng vẽ nét gạch xóa zíc-zắc (Scribble: sl/pl > 1.5) -> Xóa nét mặt trước có Depth Check!
+            if (mesh.SurfaceLines.Count > 0 && StrokeProcessor.IsScribbling(rawStroke, out float scribbleRatio))
+            {
+                int erased = TeddyRaycaster.EraseSurfaceLines(
+                    mesh,
+                    rawStroke,
+                    camera,
+                    viewport,
+                    eraseRadiusPx: 22f,
+                    checkFrontVisibilityDepth: true);
+
+                if (erased > 0)
+                {
+                    wasEraseOperation = true;
+                    statusMessage = $"Đã xóa {erased} nét vẽ bề mặt ở mặt trước (Scribble sl/pl = {scribbleRatio:F2}, giữ nguyên nét mặt sau khuất - TV2-06).";
+                    return true;
+                }
+            }
+
+            // Chiếu dán nét 3D bám sát cạnh tam giác kề nhau + kiểm tra nếp gấp khuất (Fold Check - Hình 16)
+            var status = TeddyRaycaster.TryProjectStrokeWithRayPlaneSplicing(
+                mesh,
+                rawStroke,
+                camera,
+                viewport,
+                closeLoop: false,
+                out List<Vector3> splicedPts,
+                out int crossedEdges,
+                out string diag);
+
+            if (status == SurfaceProjectionStatus.FoldDetected)
+            {
+                statusMessage = diag;
+                return false;
+            }
+
+            if (status != SurfaceProjectionStatus.Success || splicedPts.Count < 2)
+            {
+                statusMessage = string.IsNullOrEmpty(diag)
+                    ? "Nét vẽ 2D chưa nằm trên bề mặt khối 3D! Hãy xoay khối 3D bằng Chuột Phải hoặc vẽ lại nét 2D lên mặt khối."
+                    : diag;
+                return false;
+            }
+
+            AddSurfaceLine(mesh, splicedPts, paintColor, paintWidth);
+            statusMessage = $"Đã dán nét 3D bám sát bề mặt qua {crossedEdges} cạnh tam giác ({splicedPts.Count} điểm - TV2-06, Hình 16).";
+            return true;
         }
 
         /// <summary>
