@@ -93,8 +93,13 @@ namespace PaintLike.Teddy
 
         // UI Controls
         private Panel _panelTopRibbon = null!;
-        private Panel _panelActionBar = null!;
-        private Panel _panelAlgoStepBar = null!;
+        private Panel _floatingRightClickToolbar = null!;
+        private Panel _contextToolbarHeader = null!;
+        private Button _btnPinContextToolbar = null!;
+        private Button _btnCloseContextToolbar = null!;
+        private bool _isContextToolbarPinned = false;
+        private bool _isDraggingContextToolbar = false;
+        private Point _contextToolbarDragOffset = Point.Empty;
         private Panel _viewportPanel = null!;
         private Panel _panelStatusBar = null!;
         private Label _lblModeBadge = null!;
@@ -163,7 +168,7 @@ namespace PaintLike.Teddy
             Update2DToolSelection();
             UpdateCutPatternToolbarState();
             UpdateDeleteButtonState();
-            UpdateStatus("Chế độ Phác thảo 2D: Kéo Chuột Trái vẽ nét 2D (Chuột Phải xoay 3D), sau đó bấm nút thuật toán 3D trên thanh công cụ để tạo/biến đổi khối!");
+            UpdateStatus("Kéo Chuột Trái vẽ nét 2D | Click Chuột Phải mở Thanh Công Cụ Mẫu, Thuật Toán & Di Chuyển 3D | Giữ kéo Chuột Phải xoay 3D!");
         }
 
         private void InitializeStudioLayout()
@@ -396,133 +401,171 @@ namespace PaintLike.Teddy
             _btnExportPng.Click += BtnExportPng_Click;
 
             // =========================================================================
-            // 1B. THANH NÚT THỰC THI THUẬT TOÁN 3D (STAGE 2: CLICK TO APPLY 3D)
+            // 1B. THANH CÔNG CỤ NỔI CHUỘT PHẢI: GỘP MẪU HÌNH + THUẬT TOÁN & DI CHUYỂN 3D + BƯỚC (0–7)
             // =========================================================================
-            _panelActionBar = new Panel
+            _floatingRightClickToolbar = new Panel
             {
-                Dock = DockStyle.Top,
-                Height = 40,
-                BackColor = Color.FromArgb(245, 248, 255)
+                Size = new Size(466, 294),
+                Location = new Point(24, 24),
+                BackColor = UITheme.BgRibbonGroup,
+                Visible = false
             };
             typeof(Panel).InvokeMember("DoubleBuffered",
                 System.Reflection.BindingFlags.SetProperty | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic,
-                null, _panelActionBar, new object[] { true });
-            _panelActionBar.Paint += (s, e) =>
-            {
-                using Pen bottomLine = new Pen(UITheme.BorderDefault, 1f);
-                e.Graphics.DrawLine(bottomLine, 0, _panelActionBar.Height - 1, _panelActionBar.Width, _panelActionBar.Height - 1);
-            };
+                null, _floatingRightClickToolbar, new object[] { true });
+            _floatingRightClickToolbar.Paint += FloatingRightClickToolbar_Paint;
 
-            Label lblRun3D = new Label
-            {
-                AutoSize = true,
-                Location = new Point(10, 12),
-                Font = UITheme.FontGroupHeader,
-                ForeColor = UITheme.AccentPrimary,
-                Text = "THUẬT TOÁN & DI CHUYỂN 3D:"
-            };
-            _panelActionBar.Controls.Add(lblRun3D);
-
-            _btnApplyInflate3D = CreateRibbonButton(_panelActionBar, new Rectangle(176, 6, 110, 28), IconType.Cube3D, "Tạo Khối 3D", ButtonVariant.Primary,
-                "Lấy nét phác thảo 2D khép kín trong bộ đệm → Thổi phồng thành khối 3D (Mục 5.1: CDT + Pruning + Oval)");
-            _btnApplyInflate3D.Click += (s, e) => ApplyInflate3DFromSketch();
-
-            _btnApplyPaint3D = CreateRibbonButton(_panelActionBar, new Rectangle(290, 6, 104, 28), IconType.Rename, "Dán Nét 3D", ButtonVariant.Default,
-                "Chiếu nét 2D bám sát từng cạnh tam giác bề mặt 3D & chặn nếp gấp khuất (TV2-06); vẽ gạch zíc-zắc để xóa nét mặt trước; Shift+Click để tạo Gờ Sắc 3D (TV2-10)");
-            _btnApplyPaint3D.Click += (s, e) => ApplySurfacePaintFromSketch();
-
-            _btnApplyFillColor3D = CreateRibbonButton(_panelActionBar, new Rectangle(398, 6, 102, 28), IconType.ColorPalette, "Tô Vùng 3D", ButtonVariant.Default,
-                "Tô màu các mặt tam giác bên trong Vòng chọn đỏ (hoặc nét khoanh 2D khép kín) bằng Màu bút (Phím F)");
-            _btnApplyFillColor3D.Click += (s, e) => ApplyFillRegionFromSketch();
-
-            _btnApplyBaseRing3D = CreateRibbonButton(_panelActionBar, new Rectangle(504, 6, 110, 28), IconType.Circle, "Đặt Vòng Đế", ButtonVariant.Default,
-                "Lấy nét 2D khép kín trên mặt khối → Chiếu thành Vòng Đế đỏ (ActiveBaseRing) để chuẩn bị Đùn/Khoét/Làm mượt");
-            _btnApplyBaseRing3D.Click += (s, e) => ApplySetBaseRingFromSketch();
-
-            _btnApplyExtrude3D = CreateRibbonButton(_panelActionBar, new Rectangle(618, 6, 120, 28), IconType.Arrows, "Đùn / Khoét 3D", ButtonVariant.Accent,
-                "Từ Vòng Đế đỏ + nét vòm 2D → Đùn liền khối RMF (hoặc Khoét lõm 2 con trỏ - TV2-07). Giữ Shift khi bấm để Đùn thành khối rời!");
-            _btnApplyExtrude3D.Click += (s, e) => ApplyExtrudeOrCavityFromSketch();
-
-            _btnApplyCut3D = CreateRibbonButton(_panelActionBar, new Rectangle(742, 6, 106, 28), IconType.Scissors, "Cắt Khối 3D", ButtonVariant.Danger,
-                "Dùng đường cắt 2D trong bộ đệm (tự động nhận diện Cắt Xuyên hoặc Cắn Cục Bộ Hình 8) & đóng nắp Steiner-CDT (TV2-08)");
-            _btnApplyCut3D.Click += (s, e) => ApplyCut3DFromSketch();
-
-            _btnApplyBezierSmooth3D = CreateRibbonButton(_panelActionBar, new Rectangle(852, 6, 122, 28), IconType.Filter, "Mượt Bezier 3D", ButtonVariant.Default,
-                "Xóa lỗ nhăn cũ & đắp lưới Steiner-CDT + vòm Cubic Bezier khớp tiếp tuyến mặt ngoài (TV2-09 Hình 10 & 21)");
-            _btnApplyBezierSmooth3D.Click += (s, e) => ApplyBezierSmoothFromSketch();
-
-            _btnApplyBend3D = CreateRibbonButton(_panelActionBar, new Rectangle(978, 6, 106, 28), IconType.Bezier, "Uốn Khối 3D", ButtonVariant.Default,
-                "Hỗ trợ 1 nét (Auto-Spine Bend) hoặc 2 nét (Reference → Target) để uốn khối (TV2-10). Giữ Shift khi bấm để Xoắn 3D (Twist)!");
-            _btnApplyBend3D.Click += (s, e) => ApplyBend3DFromSketch();
-
-            _btnToolMove3D = CreateRibbonButton(_panelActionBar, new Rectangle(1088, 6, 120, 28), IconType.Arrows, "Di Chuyển 3D", ButtonVariant.Default,
-                "Bật chế độ Di chuyển Khối 3D sang vị trí khác (Phím M). Hoặc nắm kéo trực tiếp tâm O / mũi tên trục X, Y, Z trên khối!");
-            _btnToolMove3D.Click += (s, e) => ToggleMove3DMode();
-
-            // =========================================================================
-            // 1C. THANH MẪU BÀI BÁO & TRỰC QUAN HÓA TỪNG BƯỚC THUẬT TOÁN (HÌNH 13–15)
-            // =========================================================================
-            _panelAlgoStepBar = new Panel
+            _contextToolbarHeader = new Panel
             {
                 Dock = DockStyle.Top,
-                Height = 36,
-                BackColor = UITheme.BgPanelHeader
+                Height = 30,
+                BackColor = UITheme.BgPanelHeader,
+                Cursor = Cursors.SizeAll
             };
-            _panelAlgoStepBar.Paint += (s, e) =>
+            _contextToolbarHeader.Paint += (s, e) =>
             {
-                using Pen bottomLine = new Pen(UITheme.BorderDefault, 1f);
-                e.Graphics.DrawLine(bottomLine, 0, _panelAlgoStepBar.Height - 1, _panelAlgoStepBar.Width, _panelAlgoStepBar.Height - 1);
+                using Pen headerBottom = new Pen(UITheme.BorderDefault, 1f);
+                e.Graphics.DrawLine(headerBottom, 0, _contextToolbarHeader.Height - 1, _contextToolbarHeader.Width, _contextToolbarHeader.Height - 1);
+                using Pen outerTop = new Pen(UITheme.BorderFocus, 1.5f);
+                e.Graphics.DrawLine(outerTop, 0, 0, _contextToolbarHeader.Width, 0);
+                e.Graphics.DrawLine(outerTop, 0, 0, 0, _contextToolbarHeader.Height);
+                e.Graphics.DrawLine(outerTop, _contextToolbarHeader.Width - 1, 0, _contextToolbarHeader.Width - 1, _contextToolbarHeader.Height);
             };
 
-            Label lblPresets = new Label
+            Label lblPopupTitle = new Label
             {
                 AutoSize = true,
-                Location = new Point(10, 10),
-                Font = UITheme.FontGroupHeader,
+                Location = new Point(10, 7),
+                Font = UITheme.FontSmallBold,
                 ForeColor = UITheme.AccentPrimary,
-                Text = "MẪU:"
+                BackColor = Color.Transparent,
+                Cursor = Cursors.SizeAll,
+                Text = "⚡ MẪU HÌNH, THUẬT TOÁN & DI CHUYỂN 3D"
             };
-            _panelAlgoStepBar.Controls.Add(lblPresets);
+            _contextToolbarHeader.Controls.Add(lblPopupTitle);
 
-            CreatePresetButton(new Rectangle(52, 5, 82, 25), "Gấu Teddy", "TeddySilhouette", Color.FromArgb(244, 162, 97),
-                "Triển khai hình vẽ 2D Gấu Teddy (Hình 1 & 2 bài báo). Bấm [Tạo Khối 3D] để thổi phồng thành mô hình 3D!");
-            CreatePresetButton(new Rectangle(137, 5, 84, 25), "Quả Cherry", "Cherry", Color.FromArgb(239, 68, 68),
-                "Triển khai hình vẽ 2D Quả Cherry (Hình 5c). Bấm [Tạo Khối 3D] để dựng thành mô hình 3D!");
-            CreatePresetButton(new Rectangle(224, 5, 76, 25), "Con Rắn", "Snake", Color.FromArgb(34, 197, 94),
-                "Triển khai hình vẽ 2D Con Rắn (Hình 5a). Bấm [Tạo Khối 3D] để dựng thành mô hình 3D!");
-
-            Label lblSteps = new Label
+            void AttachHeaderDrag(Control ctrl)
             {
-                AutoSize = true,
-                Location = new Point(308, 10),
-                Font = UITheme.FontGroupHeader,
-                ForeColor = UITheme.TextSecondary,
-                Text = "BƯỚC THUẬT TOÁN:"
-            };
-            _panelAlgoStepBar.Controls.Add(lblSteps);
+                ctrl.MouseDown += (s, e) =>
+                {
+                    if (e.Button == MouseButtons.Left)
+                    {
+                        _isDraggingContextToolbar = true;
+                        Point screenPt = ctrl.PointToScreen(e.Location);
+                        Point inToolbar = _floatingRightClickToolbar.PointToClient(screenPt);
+                        _contextToolbarDragOffset = inToolbar;
+                    }
+                };
+                ctrl.MouseMove += (s, e) =>
+                {
+                    if (_isDraggingContextToolbar && e.Button == MouseButtons.Left)
+                    {
+                        Point screenPt = ctrl.PointToScreen(e.Location);
+                        Point vpPt = _viewportPanel.PointToClient(screenPt);
+                        int nx = Math.Clamp(vpPt.X - _contextToolbarDragOffset.X, 4, Math.Max(4, _viewportPanel.ClientSize.Width - _floatingRightClickToolbar.Width - 4));
+                        int ny = Math.Clamp(vpPt.Y - _contextToolbarDragOffset.Y, 4, Math.Max(4, _viewportPanel.ClientSize.Height - _floatingRightClickToolbar.Height - 4));
+                        _floatingRightClickToolbar.Location = new Point(nx, ny);
+                    }
+                };
+                ctrl.MouseUp += (s, e) => { _isDraggingContextToolbar = false; };
+            }
+            AttachHeaderDrag(_contextToolbarHeader);
+            AttachHeaderDrag(lblPopupTitle);
 
-            AddStepViewButton(new Rectangle(426, 5, 80, 25), "0. Khối 3D", TeddyAlgorithmStepView.Final3DModel,
+            _btnPinContextToolbar = CreateRibbonButton(_contextToolbarHeader, new Rectangle(368, 3, 62, 24), IconType.Star, "Ghim", ButtonVariant.Default,
+                "Ghim giữ thanh công cụ luôn mở trên màn hình (không tự đóng sau khi chọn thuật toán)");
+            _btnPinContextToolbar.Click += (s, e) =>
+            {
+                _isContextToolbarPinned = !_isContextToolbarPinned;
+                UITheme.SetButtonSelected(_btnPinContextToolbar, _isContextToolbarPinned);
+                UpdateStatus(_isContextToolbarPinned
+                    ? "Đã GHIM Thanh Công Cụ 3D trên màn hình (kéo thanh tiêu đề để dời chỗ, bấm lại [Ghim] hoặc [✕] để tắt)."
+                    : "Đã bỏ ghim: Thanh công cụ sẽ tự đóng gọn sau khi thực thi thuật toán.");
+            };
+
+            _btnCloseContextToolbar = CreateRibbonButton(_contextToolbarHeader, new Rectangle(433, 3, 26, 24), IconType.None, "✕", ButtonVariant.Default,
+                "Đóng thanh công cụ nổi (Esc)");
+            _btnCloseContextToolbar.Click += (s, e) => HideFloatingRightClickToolbar();
+
+            _floatingRightClickToolbar.Controls.Add(_contextToolbarHeader);
+
+            // --- Khu vực 1: MẪU BÀI BÁO & KHỐI CƠ BẢN (2D) ---
+            CreatePresetButton(new Rectangle(12, 52, 98, 28), "Gấu Teddy", "TeddySilhouette", Color.FromArgb(244, 162, 97),
+                "Triển khai hình vẽ 2D Gấu Teddy (Hình 1 & 2 bài báo), sau đó bấm [Tạo Khối 3D] ngay bên dưới!");
+            CreatePresetButton(new Rectangle(114, 52, 102, 28), "Quả Cherry", "Cherry", Color.FromArgb(239, 68, 68),
+                "Triển khai hình vẽ 2D Quả Cherry (Hình 5c), sau đó bấm [Tạo Khối 3D] ngay bên dưới!");
+            CreatePresetButton(new Rectangle(220, 52, 90, 28), "Con Rắn", "Snake", Color.FromArgb(34, 197, 94),
+                "Triển khai hình vẽ 2D Con Rắn (Hình 5a), sau đó bấm [Tạo Khối 3D] ngay bên dưới!");
+
+            Button btnPopupSphere = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(314, 52, 68, 28), IconType.Circle, "Cầu 2D", ButtonVariant.Default,
+                "Triển khai hình tròn 2D (Khối Cầu), bấm [Tạo Khối 3D] để dựng thành Khối Cầu 3D");
+            btnPopupSphere.Click += (s, e) => DeployPresetAs2DSketch("Sphere", Color.FromArgb(244, 162, 97), "Khối Cầu");
+
+            Button btnPopupCube = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(386, 52, 68, 28), IconType.Rectangle, "Hộp 2D", ButtonVariant.Default,
+                "Triển khai hình vuông 2D (Khối Hộp), bấm [Tạo Khối 3D] để dựng thành Khối Hộp 3D");
+            btnPopupCube.Click += (s, e) => DeployPresetAs2DSketch("Cube", Color.FromArgb(99, 179, 237), "Khối Hộp");
+
+            // --- Khu vực 2: THUẬT TOÁN & DI CHUYỂN 3D (Lưới 3×3) ---
+            _btnApplyInflate3D = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(12, 108, 144, 28), IconType.Cube3D, "Tạo Khối 3D", ButtonVariant.Primary,
+                "Lấy nét phác thảo 2D khép kín trong bộ đệm → Thổi phồng thành khối 3D (Mục 5.1: CDT + Pruning + Oval)");
+            _btnApplyInflate3D.Click += (s, e) => { DismissContextToolbarIfUnpinned(); ApplyInflate3DFromSketch(); };
+
+            _btnApplyPaint3D = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(161, 108, 144, 28), IconType.Rename, "Dán Nét 3D", ButtonVariant.Default,
+                "Chiếu nét 2D bám sát từng cạnh tam giác bề mặt 3D & chặn nếp gấp khuất (TV2-06); vẽ gạch zíc-zắc để xóa nét mặt trước; Shift+Click để tạo Gờ Sắc 3D (TV2-10)");
+            _btnApplyPaint3D.Click += (s, e) => { DismissContextToolbarIfUnpinned(); ApplySurfacePaintFromSketch(); };
+
+            _btnApplyFillColor3D = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(310, 108, 144, 28), IconType.ColorPalette, "Tô Vùng 3D", ButtonVariant.Default,
+                "Tô màu các mặt tam giác bên trong Vòng chọn đỏ (hoặc nét khoanh 2D khép kín) bằng Màu bút (Phím F)");
+            _btnApplyFillColor3D.Click += (s, e) => { DismissContextToolbarIfUnpinned(); ApplyFillRegionFromSketch(); };
+
+            _btnApplyBaseRing3D = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(12, 140, 144, 28), IconType.Circle, "Đặt Vòng Đế", ButtonVariant.Default,
+                "Lấy nét 2D khép kín trên mặt khối → Chiếu thành Vòng Đế đỏ (ActiveBaseRing) để chuẩn bị Đùn/Khoét/Làm mượt");
+            _btnApplyBaseRing3D.Click += (s, e) => { DismissContextToolbarIfUnpinned(); ApplySetBaseRingFromSketch(); };
+
+            _btnApplyExtrude3D = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(161, 140, 144, 28), IconType.Arrows, "Đùn / Khoét 3D", ButtonVariant.Accent,
+                "Từ Vòng Đế đỏ + nét vòm 2D → Đùn liền khối RMF (hoặc Khoét lõm 2 con trỏ - TV2-07). Giữ Shift khi bấm để Đùn thành khối rời!");
+            _btnApplyExtrude3D.Click += (s, e) => { DismissContextToolbarIfUnpinned(); ApplyExtrudeOrCavityFromSketch(); };
+
+            _btnApplyCut3D = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(310, 140, 144, 28), IconType.Scissors, "Cắt Khối 3D", ButtonVariant.Danger,
+                "Dùng đường cắt 2D trong bộ đệm (tự động nhận diện Cắt Xuyên hoặc Cắn Cục Bộ Hình 8) & đóng nắp Steiner-CDT (TV2-08)");
+            _btnApplyCut3D.Click += (s, e) => { DismissContextToolbarIfUnpinned(); ApplyCut3DFromSketch(); };
+
+            _btnApplyBezierSmooth3D = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(12, 172, 144, 28), IconType.Filter, "Mượt Bezier 3D", ButtonVariant.Default,
+                "Xóa lỗ nhăn cũ & đắp lưới Steiner-CDT + vòm Cubic Bezier khớp tiếp tuyến mặt ngoài (TV2-09 Hình 10 & 21)");
+            _btnApplyBezierSmooth3D.Click += (s, e) => { DismissContextToolbarIfUnpinned(); ApplyBezierSmoothFromSketch(); };
+
+            _btnApplyBend3D = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(161, 172, 144, 28), IconType.Bezier, "Uốn Khối 3D", ButtonVariant.Default,
+                "Hỗ trợ 1 nét (Auto-Spine Bend) hoặc 2 nét (Reference → Target) để uốn khối (TV2-10). Giữ Shift khi bấm để Xoắn 3D (Twist)!");
+            _btnApplyBend3D.Click += (s, e) => { DismissContextToolbarIfUnpinned(); ApplyBend3DFromSketch(); };
+
+            _btnToolMove3D = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(310, 172, 144, 28), IconType.Arrows, "Di Chuyển 3D", ButtonVariant.Default,
+                "Bật chế độ Di chuyển Khối 3D sang vị trí khác (Phím M). Hoặc nắm kéo trực tiếp tâm O / mũi tên trục X, Y, Z trên khối!");
+            _btnToolMove3D.Click += (s, e) => { DismissContextToolbarIfUnpinned(); ToggleMove3DMode(); };
+
+            // --- Khu vực 3: MINH HỌA BƯỚC THUẬT TOÁN (0–7), TÁI LƯỚI & ĐO BENCHMARK ---
+            AddStepViewButton(new Rectangle(12, 228, 85, 25), "0. Khối 3D", TeddyAlgorithmStepView.Final3DModel,
                 "Hiển thị mô hình 3D hoàn chỉnh sau khi khâu lưới và làm mịn (Phím 0)");
-            AddStepViewButton(new Rectangle(509, 5, 84, 25), "1. Đa giác", TeddyAlgorithmStepView.Step1_InitialPolygon2D,
+            AddStepViewButton(new Rectangle(101, 228, 85, 25), "1. Đa giác", TeddyAlgorithmStepView.Step1_InitialPolygon2D,
                 "Hình 13a: Đa giác phẳng 2D với các cạnh biên có độ dài đều nhau (Phím 1)");
-            AddStepViewButton(new Rectangle(596, 5, 74, 25), "2. CDT", TeddyAlgorithmStepView.Step2_CDT_T_S_J,
+            AddStepViewButton(new Rectangle(190, 228, 85, 25), "2. CDT", TeddyAlgorithmStepView.Step2_CDT_T_S_J,
                 "Hình 13b: Lưới CDT & Phân loại tam giác Terminal (T), Sleeve (S), Junction (J) (Phím 2)");
-            AddStepViewButton(new Rectangle(673, 5, 82, 25), "3. Trục thô", TeddyAlgorithmStepView.Step3_RawChordalAxis,
+            AddStepViewButton(new Rectangle(279, 228, 85, 25), "3. Trục thô", TeddyAlgorithmStepView.Step3_RawChordalAxis,
                 "Hình 13c: Trục Chordal Axis thô trước khi cắt tỉa nhánh phụ (Phím 3)");
-            AddStepViewButton(new Rectangle(758, 5, 76, 25), "4. Spine", TeddyAlgorithmStepView.Step4_PruningAndSpine,
+            AddStepViewButton(new Rectangle(368, 228, 86, 25), "4. Spine", TeddyAlgorithmStepView.Step4_PruningAndSpine,
                 "Hình 13e-f & Hình 14: Cắt tỉa nửa đường tròn (Pruning) và rút trích trục Spine (Phím 4)");
-            AddStepViewButton(new Rectangle(837, 5, 82, 25), "5. Oval 3D", TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D,
+
+            AddStepViewButton(new Rectangle(12, 257, 85, 25), "5. Oval 3D", TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D,
                 "Hình 15b-c: Nâng cao độ Z cho Spine & cung 1/4 elip sin/cos (Phím 5)");
-            AddStepViewButton(new Rectangle(922, 5, 92, 25), "6. Đùn 17-18", TeddyAlgorithmStepView.Step6_ExtrusionTwoPointer3D,
+            AddStepViewButton(new Rectangle(101, 257, 85, 25), "6. Đùn 17-18", TeddyAlgorithmStepView.Step6_ExtrusionTwoPointer3D,
                 "Hình 17–19: Mặt phẳng chiếu Ring-Normal, quét 2 con trỏ L↔R & lát cắt RMF (Phím 6)");
-            AddStepViewButton(new Rectangle(1017, 5, 92, 25), "7. Bezier 21", TeddyAlgorithmStepView.Step7_BezierHoleSmoothing3D,
+            AddStepViewButton(new Rectangle(190, 257, 85, 25), "7. Bezier 21", TeddyAlgorithmStepView.Step7_BezierHoleSmoothing3D,
                 "Hình 10 & 21: Xóa lỗ, lưới Steiner-CDT & vòm Cubic Bezier khớp tiếp tuyến (Phím 7)");
 
-            Button btnRemesh = CreateRibbonButton(_panelAlgoStepBar, new Rectangle(1114, 5, 82, 25), IconType.Filter, "Tái lưới", ButtonVariant.Default,
+            Button btnRemesh = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(279, 257, 85, 25), IconType.Filter, "Tái lưới", ButtonVariant.Default,
                 "Tái chia lưới đẳng hướng bảo toàn đa tạp 4 pha (Split / Link-Collapse / Valence Flip / Taubin - TV1-09)");
-            btnRemesh.Click += (s, e) => ApplyIsotropicRemeshOnActiveMesh();
+            btnRemesh.Click += (s, e) => { DismissContextToolbarIfUnpinned(); ApplyIsotropicRemeshOnActiveMesh(); };
 
-            Button btnBenchmark = CreateRibbonButton(_panelAlgoStepBar, new Rectangle(1199, 5, 72, 25), IconType.Star, "Đo [B]", ButtonVariant.Default,
+            Button btnBenchmark = CreateRibbonButton(_floatingRightClickToolbar, new Rectangle(368, 257, 86, 25), IconType.Star, "Đo [B]", ButtonVariant.Default,
                 "Bật/tắt Thẻ Benchmark Hình học 3D & Kiểm định Euler V-E+F=2 (Phím B - TV3-09)");
             btnBenchmark.Click += (s, e) => ToggleBenchmarkOverlay();
 
@@ -610,12 +653,71 @@ namespace PaintLike.Teddy
                 _viewportPanel.Invalidate();
             };
             this.MouseWheel += ViewportPanel_MouseWheel;
+            _viewportPanel.Controls.Add(_floatingRightClickToolbar);
 
             this.Controls.Add(_viewportPanel);
-            this.Controls.Add(_panelAlgoStepBar);
-            this.Controls.Add(_panelActionBar);
             this.Controls.Add(_panelTopRibbon);
             this.Controls.Add(_panelStatusBar);
+        }
+
+        private void FloatingRightClickToolbar_Paint(object? sender, PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(UITheme.BgRibbonGroup);
+
+            TextRenderer.DrawText(g, "MẪU HÌNH 2D (TRIỂN KHAI PHÁC THẢO):", UITheme.FontGroupHeader,
+                new Point(12, 35), UITheme.TextSecondary);
+
+            using (Pen divPen = new Pen(UITheme.BorderSubtle, 1f))
+            {
+                g.DrawLine(divPen, 10, 86, _floatingRightClickToolbar.Width - 10, 86);
+                g.DrawLine(divPen, 10, 206, _floatingRightClickToolbar.Width - 10, 206);
+            }
+
+            TextRenderer.DrawText(g, "THUẬT TOÁN & DI CHUYỂN 3D (BẤM ĐỂ ÁP DỤNG):", UITheme.FontGroupHeader,
+                new Point(12, 91), UITheme.AccentPrimary);
+
+            TextRenderer.DrawText(g, "MINH HỌA BƯỚC THUẬT TOÁN (0–7) & KIỂM ĐỊNH:", UITheme.FontGroupHeader,
+                new Point(12, 211), UITheme.TextSecondary);
+
+            using (Pen borderPen = new Pen(UITheme.BorderFocus, 1.5f))
+            {
+                g.DrawRectangle(borderPen, 0, 0, _floatingRightClickToolbar.Width - 1, _floatingRightClickToolbar.Height - 1);
+            }
+        }
+
+        private void ShowFloatingRightClickToolbar(Point viewportPt)
+        {
+            if (_floatingRightClickToolbar == null) return;
+
+            int maxX = Math.Max(8, _viewportPanel.ClientSize.Width - _floatingRightClickToolbar.Width - 8);
+            int maxY = Math.Max(8, _viewportPanel.ClientSize.Height - _floatingRightClickToolbar.Height - 8);
+            int x = Math.Clamp(viewportPt.X + 10, 8, maxX);
+            int y = Math.Clamp(viewportPt.Y + 10, 8, maxY);
+
+            _floatingRightClickToolbar.Location = new Point(x, y);
+            _floatingRightClickToolbar.Visible = true;
+            _floatingRightClickToolbar.BringToFront();
+            UpdateStatus("Đã mở Thanh Công Cụ Chuột Phải: Chọn Mẫu 2D, Thuật Toán 3D hoặc Di Chuyển 3D (Bấm [Ghim] nếu muốn giữ cố định).");
+        }
+
+        private void HideFloatingRightClickToolbar()
+        {
+            if (_floatingRightClickToolbar != null && _floatingRightClickToolbar.Visible)
+            {
+                _floatingRightClickToolbar.Visible = false;
+                _viewportPanel?.Invalidate();
+            }
+        }
+
+        private void DismissContextToolbarIfUnpinned()
+        {
+            if (_floatingRightClickToolbar != null && _floatingRightClickToolbar.Visible && !_isContextToolbarPinned)
+            {
+                _floatingRightClickToolbar.Visible = false;
+                _viewportPanel?.Invalidate();
+            }
         }
 
         private static Button CreateRibbonButton(Panel parent, Rectangle bounds, IconType icon, string text, ButtonVariant variant, string tooltip, ToolTip? tt = null)
@@ -654,7 +756,7 @@ namespace PaintLike.Teddy
             Button btn = new Button { Bounds = bounds };
             UITheme.StyleButton(btn, IconType.Star, label, ButtonVariant.Default, false, _toolTip, tooltip);
             btn.Click += (s, e) => DeployPresetAs2DSketch(presetKey, presetColor, label);
-            _panelAlgoStepBar.Controls.Add(btn);
+            _floatingRightClickToolbar.Controls.Add(btn);
         }
 
         private void AddStepViewButton(Rectangle bounds, string label, TeddyAlgorithmStepView step, string tooltip)
@@ -662,7 +764,7 @@ namespace PaintLike.Teddy
             Button btn = new Button { Bounds = bounds };
             UITheme.StyleButton(btn, IconType.None, label, ButtonVariant.Default, false, _toolTip, tooltip);
             btn.Click += (s, e) => SetAlgorithmStepView(step);
-            _panelAlgoStepBar.Controls.Add(btn);
+            _floatingRightClickToolbar.Controls.Add(btn);
             _stepViewButtons[step] = btn;
         }
 
@@ -731,6 +833,8 @@ namespace PaintLike.Teddy
             }
             else if (e.Button == MouseButtons.Left)
             {
+                DismissContextToolbarIfUnpinned();
+
                 Quaternion? activeGizmoObjRot = null;
                 if (_show3DAxes &&
                     (_algorithmStepView == TeddyAlgorithmStepView.Final3DModel || _algorithmStepView == TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D))
@@ -818,6 +922,10 @@ namespace PaintLike.Teddy
                 if (Math.Abs(e.X - _mouseDownPos.X) > 4 || Math.Abs(e.Y - _mouseDownPos.Y) > 4)
                 {
                     _hasMovedSignificantly = true;
+                    if (e.Button == MouseButtons.Right)
+                    {
+                        DismissContextToolbarIfUnpinned();
+                    }
                 }
             }
 
@@ -912,6 +1020,10 @@ namespace PaintLike.Teddy
             if (_isRotatingObject3D)
             {
                 FinishRotatingObject3D();
+                if (e.Button == MouseButtons.Right && !_hasMovedSignificantly)
+                {
+                    ShowFloatingRightClickToolbar(e.Location);
+                }
                 return;
             }
 
@@ -920,7 +1032,11 @@ namespace PaintLike.Teddy
                 _camera.StopInteraction();
                 _viewportPanel.Cursor = GetDefaultModeCursor();
 
-                if (e.Button == MouseButtons.Left && !_hasMovedSignificantly)
+                if (e.Button == MouseButtons.Right && !_hasMovedSignificantly)
+                {
+                    ShowFloatingRightClickToolbar(e.Location);
+                }
+                else if (e.Button == MouseButtons.Left && !_hasMovedSignificantly)
                 {
                     HandleViewportClick(e.Location);
                     _viewportPanel.Invalidate();
@@ -979,19 +1095,19 @@ namespace PaintLike.Teddy
 
                         if (added.IsSelfIntersecting)
                         {
-                            UpdateStatus($"⚠ {added.Label} bị TỰ CẮT NHAU! Hãy tẩy/xóa nét hoặc vẽ lại đường trơn trước khi bấm [Tạo Khối 3D].");
+                            UpdateStatus($"⚠ {added.Label} bị TỰ CẮT NHAU! Hãy tẩy/xóa nét hoặc vẽ lại đường trơn trước khi tạo khối 3D.");
                         }
                         else if (added.CutPattern != TeddyCutPattern.Freehand)
                         {
-                            UpdateStatus($"Đã ghi nhận {added.Label} vào bộ đệm 2D. Bấm nút [Cắt Khối 3D] ở thanh dưới để thực thi phép cắt!");
+                            UpdateStatus($"Đã ghi nhận {added.Label} vào bộ đệm 2D. Click Chuột Phải → chọn [Cắt Khối 3D] để thực thi phép cắt!");
                         }
                         else if (_sceneMeshes.Count == 0)
                         {
-                            UpdateStatus($"Đã lưu {added.Label} vào lớp phác thảo 2D. Bấm [Tạo Khối 3D] để thổi phồng thành mô hình 3D!");
+                            UpdateStatus($"Đã lưu {added.Label} vào lớp phác thảo 2D. Click Chuột Phải → chọn [Tạo Khối 3D] để thổi phồng thành mô hình 3D!");
                         }
                         else
                         {
-                            UpdateStatus($"Đã lưu {added.Label} vào lớp phác thảo 2D. Hãy chọn thao tác 3D: [Tạo Khối 3D], [Dán Nét 3D], [Đặt Vòng Đế], [Đùn / Khoét 3D], [Cắt Khối 3D] hoặc [Uốn Khối 3D].");
+                            UpdateStatus($"Đã lưu {added.Label} vào lớp phác thảo 2D. Click Chuột Phải để mở thanh công cụ chọn thao tác 3D!");
                         }
                     }
                     else
@@ -2726,8 +2842,22 @@ namespace PaintLike.Teddy
                 ResetActiveRotationAndCamera();
                 return true;
             }
+            if (keyData == Keys.Tab)
+            {
+                if (_floatingRightClickToolbar != null && _floatingRightClickToolbar.Visible)
+                    HideFloatingRightClickToolbar();
+                else
+                    ShowFloatingRightClickToolbar(_isMouseInViewport ? _currentMousePos : new Point(40, 40));
+                return true;
+            }
             if (keyData == Keys.Escape)
             {
+                if (_floatingRightClickToolbar != null && _floatingRightClickToolbar.Visible)
+                {
+                    HideFloatingRightClickToolbar();
+                    UpdateStatus("Đã đóng Thanh Công Cụ Chuột Phải.");
+                    return true;
+                }
                 if (_sketchToolMode == Sketch2DToolMode.EraseStroke || _sketchToolMode == Sketch2DToolMode.Move3DMesh)
                 {
                     _sketchToolMode = Sketch2DToolMode.DrawStroke;

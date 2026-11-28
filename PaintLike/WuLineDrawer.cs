@@ -1,5 +1,3 @@
-using System;
-using System.Drawing;
 using System.Drawing.Drawing2D;
 
 namespace PaintLike
@@ -67,7 +65,7 @@ namespace PaintLike
         private static void DrawDot(Graphics g, Color color, float x, float y, int thickness)
         {
             float half = thickness / 2f;
-            using (SolidBrush b = new SolidBrush(color))
+            using (SolidBrush b = new(color))
             {
                 g.FillEllipse(b, x - half, y - half, thickness, thickness);
             }
@@ -341,13 +339,13 @@ namespace PaintLike
         // Helper: Calculate diamond points
         private static Point[] GetDiamondPoints(Rectangle rect)
         {
-            return new Point[]
-            {
-                new Point(rect.X + rect.Width / 2, rect.Top),
-                new Point(rect.Right, rect.Y + rect.Height / 2),
-                new Point(rect.X + rect.Width / 2, rect.Bottom),
-                new Point(rect.Left, rect.Y + rect.Height / 2)
-            };
+            return
+            [
+                new(rect.X + rect.Width / 2, rect.Top),
+                new(rect.Right, rect.Y + rect.Height / 2),
+                new(rect.X + rect.Width / 2, rect.Bottom),
+                new(rect.Left, rect.Y + rect.Height / 2)
+            ];
         }
 
         // KIM CƯƠNG - Dùng thuật toán vẽ đa giác 4 cạnh
@@ -361,16 +359,16 @@ namespace PaintLike
         private static Point[] GetArrowPoints(Rectangle rect)
         {
             int arrowSize = Math.Min(rect.Width, rect.Height) / 3;
-            return new Point[]
-            {
-                new Point(rect.X + rect.Width / 2, rect.Top),
-                new Point(rect.Right - arrowSize, rect.Top + arrowSize),
-                new Point(rect.X + rect.Width / 2 + arrowSize / 2, rect.Top + arrowSize),
-                new Point(rect.X + rect.Width / 2 + arrowSize / 2, rect.Bottom),
-                new Point(rect.X + rect.Width / 2 - arrowSize / 2, rect.Bottom),
-                new Point(rect.X + rect.Width / 2 - arrowSize / 2, rect.Top + arrowSize),
-                new Point(rect.Left + arrowSize, rect.Top + arrowSize)
-            };
+            return
+            [
+                new(rect.X + rect.Width / 2, rect.Top),
+                new(rect.Right - arrowSize, rect.Top + arrowSize),
+                new(rect.X + rect.Width / 2 + arrowSize / 2, rect.Top + arrowSize),
+                new(rect.X + rect.Width / 2 + arrowSize / 2, rect.Bottom),
+                new(rect.X + rect.Width / 2 - arrowSize / 2, rect.Bottom),
+                new(rect.X + rect.Width / 2 - arrowSize / 2, rect.Top + arrowSize),
+                new(rect.Left + arrowSize, rect.Top + arrowSize)
+            ];
         }
 
         // MŨI TÊN - Dùng thuật toán vẽ đa giác 7 cạnh
@@ -497,7 +495,7 @@ namespace PaintLike
                 double x = (coef0 * p0.X) + (coef1 * p1.X) + (coef2 * p2.X) + (coef3 * p3.X);
                 double y = (coef0 * p0.Y) + (coef1 * p1.Y) + (coef2 * p2.Y) + (coef3 * p3.Y);
 
-                Point currentPoint = new Point((int)Math.Round(x), (int)Math.Round(y));
+                Point currentPoint = new((int)Math.Round(x), (int)Math.Round(y));
 
                 // Vẽ đường nối từ điểm trước đến điểm hiện tại
                 if (i > 0)
@@ -631,9 +629,9 @@ namespace PaintLike
                 }
 
                 int d = r * 2;
-                using (GraphicsPath path = new GraphicsPath())
+                using (GraphicsPath path = new())
                 {
-                    Rectangle arc = new Rectangle(rect.Location, new Size(d, d));
+                    Rectangle arc = new(rect.Location, new Size(d, d));
                     path.AddArc(arc, 180, 90);
                     arc.X = rect.Right - d;
                     path.AddArc(arc, 270, 90);
