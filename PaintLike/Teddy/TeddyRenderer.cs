@@ -62,12 +62,100 @@ namespace PaintLike.Teddy
     }
 
     /// <summary>
-    /// [TV3-03] Bộ kết xuất đồ họa 3D phần mềm tốc độ cao (Mục 1 & 6 bài báo Teddy).
-    /// Hỗ trợ Z-sorting (Painter's Algorithm), loại bỏ mặt khuất (Back-face culling),
-    /// tự động phát hiện đường viền Silhouette cho chế độ Pen-and-Ink NPR và kết xuất ảnh PNG trong suốt.
+    /// [TV3-03 & TV3-07] Bộ kết xuất đồ họa 3D phần mềm tốc độ cao (Mục 1 & 6 bài báo Teddy).
+    /// Tích hợp Software Z-Buffer khử nét Silhouette & nét vẽ bị che khuất (Hidden-Line Removal),
+    /// tô bóng Pen-and-Ink NPR / Smooth Shaded và kết xuất ảnh PNG trong suốt.
     /// </summary>
     public static class TeddyRenderer
     {
+        /// <summary>
+        /// [TV3-07] Bộ đệm độ sâu phần mềm (Software Z-Buffer) dạng lưới thô 2x2 px dùng để khử nét khuất
+        /// trong chế độ Pen-and-Ink NPR và vẽ nét bề mặt 3D (Mục 1 & 6).
+        /// </summary>
+        public sealed class SoftwareDepthBuffer
+        {
+            private readonly int _cellSize;
+            private readonly int _cols;
+            private readonly int _rows;
+            private readonly float[] _maxViewZ;
+
+            public SoftwareDepthBuffer(Size viewport, int cellSize = 2)
+            {
+                _cellSize = Math.Max(1, cellSize);
+                _cols = Math.Max(1, (viewport.Width + _cellSize - 1) / _cellSize + 1);
+                _rows = Math.Max(1, (viewport.Height + _cellSize - 1) / _cellSize + 1);
+                _maxViewZ = new float[_cols * _rows];
+                Array.Fill(_maxViewZ, float.NegativeInfinity);
+            }
+
+            public void RasterizeTriangle(Vector3 s0, Vector3 s1, Vector3 s2)
+            {
+                float minX = MathF.Min(s0.X, MathF.Min(s1.X, s2.X));
+                float maxX = MathF.Max(s0.X, MathF.Max(s1.X, s2.X));
+                float minY = MathF.Min(s0.Y, MathF.Min(s1.Y, s2.Y));
+                float maxY = MathF.Max(s0.Y, MathF.Max(s1.Y, s2.Y));
+
+                int c0 = Math.Clamp((int)MathF.Floor(minX / _cellSize), 0, _cols - 1);
+                int c1 = Math.Clamp((int)MathF.Ceiling(maxX / _cellSize), 0, _cols - 1);
+                int r0 = Math.Clamp((int)MathF.Floor(minY / _cellSize), 0, _rows - 1);
+                int r1 = Math.Clamp((int)MathF.Ceiling(maxY / _cellSize), 0, _rows - 1);
+
+                float area = (s1.X - s0.X) * (s2.Y - s0.Y) - (s1.Y - s0.Y) * (s2.X - s0.X);
+                if (MathF.Abs(area) < 1e-4f) return;
+                float invArea = 1f / area;
+
+                for (int r = r0; r <= r1; r++)
+                {
+                    float py = r * _cellSize + _cellSize * 0.5f;
+                    int rowOffset = r * _cols;
+                    for (int c = c0; c <= c1; c++)
+                    {
+                        float px = c * _cellSize + _cellSize * 0.5f;
+                        float w0 = ((s1.X - px) * (s2.Y - py) - (s1.Y - py) * (s2.X - px)) * invArea;
+                        float w1 = ((s2.X - px) * (s0.Y - py) - (s2.Y - py) * (s0.X - px)) * invArea;
+                        float w2 = 1f - w0 - w1;
+
+                        if (w0 >= -0.04f && w1 >= -0.04f && w2 >= -0.04f)
+                        {
+                            float z = w0 * s0.Z + w1 * s1.Z + w2 * s2.Z;
+                            int idx = rowOffset + c;
+                            if (z > _maxViewZ[idx])
+                                _maxViewZ[idx] = z;
+                        }
+                    }
+                }
+            }
+
+            public bool IsPointVisible(float screenX, float screenY, float viewZ, float depthBias = 5.5f)
+            {
+                int cc = (int)MathF.Round(screenX / _cellSize);
+                int rr = (int)MathF.Round(screenY / _cellSize);
+                if (cc < 0 || cc >= _cols || rr < 0 || rr >= _rows) return true;
+
+                // Lấy giá trị độ sâu thấp nhất (gần về phía sau nhất) trong lân cận 3x3 ô để tránh cắt nhầm nét viền Silhouette
+                float minNeighborMaxZ = float.PositiveInfinity;
+                for (int dr = -1; dr <= 1; dr++)
+                {
+                    int r = rr + dr;
+                    if (r < 0 || r >= _rows) continue;
+                    int rowOffset = r * _cols;
+                    for (int dc = -1; dc <= 1; dc++)
+                    {
+                        int c = cc + dc;
+                        if (c < 0 || c >= _cols) continue;
+                        float zVal = _maxViewZ[rowOffset + c];
+                        if (float.IsNegativeInfinity(zVal))
+                            return true; // Chạm vùng nền trống ngay sát biên Silhouette -> hiển thị nét!
+                        if (zVal < minNeighborMaxZ)
+                            minNeighborMaxZ = zVal;
+                    }
+                }
+
+                if (float.IsPositiveInfinity(minNeighborMaxZ)) return true;
+                return viewZ >= minNeighborMaxZ - depthBias;
+            }
+        }
+
         private struct RenderTri
         {
             public int TriIndex;
@@ -77,6 +165,44 @@ namespace PaintLike.Teddy
             public float AvgZ;
             public Vector3 ViewNormal;
             public bool IsInteriorBackFace;
+        }
+
+        /// <summary>
+        /// [TV3-07] Dựng Software Z-Buffer dùng chung cho toàn bộ các khối 3D hiển thị trong cảnh.
+        /// </summary>
+        public static SoftwareDepthBuffer BuildSceneDepthBuffer(
+            Size viewport,
+            IEnumerable<TeddyMesh> meshes,
+            VirtualTrackballCamera camera,
+            TeddyCutPieceVisibility cutPieceVisibility,
+            TeddyCutSurfaceViewMode cutSurfaceViewMode)
+        {
+            var zBuf = new SoftwareDepthBuffer(viewport);
+            if (meshes == null) return zBuf;
+
+            foreach (var mesh in meshes)
+            {
+                if (mesh == null || mesh.IsEmpty) continue;
+                if (mesh.IsCutOffPiece && (cutPieceVisibility == TeddyCutPieceVisibility.Hidden || cutPieceVisibility == TeddyCutPieceVisibility.GhostTransparent))
+                    continue;
+
+                bool isOpenHollow = cutSurfaceViewMode == TeddyCutSurfaceViewMode.OpenHollowInterior && mesh.CutSectionRings.Count > 0;
+                Vector3[] screenVerts = new Vector3[mesh.Vertices.Count];
+                for (int i = 0; i < mesh.Vertices.Count; i++)
+                    screenVerts[i] = camera.ProjectToScreen(mesh.Vertices[i], viewport);
+
+                foreach (var tri in mesh.Triangles)
+                {
+                    if (tri.IsCutCap && isOpenHollow) continue;
+                    Vector3 vNorm = camera.NormalToView(tri.FaceNormal);
+                    bool front = vNorm.Z >= -0.05f;
+                    bool hasCut = mesh.CutSectionRings.Count > 0 || tri.IsCutCap;
+                    if (!front && !isOpenHollow && !hasCut) continue;
+
+                    zBuf.RasterizeTriangle(screenVerts[tri.V0], screenVerts[tri.V1], screenVerts[tri.V2]);
+                }
+            }
+            return zBuf;
         }
 
         public static void RenderScene(
@@ -90,7 +216,8 @@ namespace PaintLike.Teddy
             bool drawBackground = true,
             TeddyCutPieceVisibility cutPieceVisibility = TeddyCutPieceVisibility.Visible,
             TeddyCutSurfaceViewMode cutSurfaceViewMode = TeddyCutSurfaceViewMode.HighlightedCrossSection,
-            Color? cutFillColor = null)
+            Color? cutFillColor = null,
+            SoftwareDepthBuffer? sharedDepthBuffer = null)
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
@@ -157,6 +284,18 @@ namespace PaintLike.Teddy
 
                 // Sắp xếp từ xa đến gần (Painter's Algorithm theo Z_view)
                 visibleTris.Sort((a, b) => a.AvgZ.CompareTo(b.AvgZ));
+
+                // [TV3-07] Nạp SoftwareDepthBuffer (nếu chưa truyền từ cảnh) để khử nét khuất ở chế độ Pen-and-Ink và SurfaceLines
+                SoftwareDepthBuffer? zBuf = sharedDepthBuffer;
+                if (zBuf == null && !isGhostPiece)
+                {
+                    zBuf = new SoftwareDepthBuffer(viewport);
+                    foreach (var rt in visibleTris)
+                    {
+                        var t = mesh.Triangles[rt.TriIndex];
+                        zBuf.RasterizeTriangle(screenVerts[t.V0], screenVerts[t.V1], screenVerts[t.V2]);
+                    }
+                }
 
                 // Nguồn sáng chính (Key Light) và nguồn sáng phụ (Rim/Fill Light)
                 Vector3 keyLight = Vector3.Normalize(new Vector3(-0.38f, 0.52f, 0.76f));
@@ -232,15 +371,15 @@ namespace PaintLike.Teddy
                         }
                     }
 
-                    // Nếu là chế độ Pen-and-Ink (Hình 1 bài báo): Phát hiện và vẽ các cạnh Silhouette đậm nét mực
+                    // Nếu là chế độ Pen-and-Ink (Hình 1 bài báo): Phát hiện và vẽ các cạnh Silhouette đậm nét mực có khử nét khuất Z-Buffer
                     if (style == TeddyRenderStyle.PenAndInk)
                     {
-                        DrawPenAndInkSilhouettes(g, mesh, screenVerts, isFrontFacing, isGhostPiece, isOpenHollow);
+                        DrawPenAndInkSilhouettes(g, mesh, screenVerts, isFrontFacing, isGhostPiece, isOpenHollow, isGhostPiece ? null : zBuf);
                     }
                 }
 
-                // Vẽ các nét trang trí trên bề mặt 3D và đường viền đánh dấu vị trí mặt cắt
-                DrawSurfaceLines(g, mesh, camera, viewport, isGhostPiece, cutSurfaceViewMode);
+                // Vẽ các nét trang trí trên bề mặt 3D và đường viền đánh dấu vị trí mặt cắt (có khử nét khuất Z-Buffer)
+                DrawSurfaceLines(g, mesh, camera, viewport, isGhostPiece, cutSurfaceViewMode, isGhostPiece ? null : zBuf);
             }
 
             // Vẽ nét bút 2D người dùng đang kéo trên màn hình
@@ -387,10 +526,21 @@ namespace PaintLike.Teddy
             Vector3[] screenVerts,
             bool[] isFrontFacing,
             bool isGhostPiece = false,
-            bool isOpenHollow = false)
+            bool isOpenHollow = false,
+            SoftwareDepthBuffer? zBuf = null)
         {
             Color silColor = isGhostPiece ? Color.FromArgb(95, 71, 85, 105) : Color.FromArgb(30, 58, 95);
             Color crsColor = isGhostPiece ? Color.FromArgb(55, 71, 85, 105) : Color.FromArgb(95, 51, 65, 85);
+
+            bool IsEdgeVisible(Vector3 a, Vector3 b, float bias)
+            {
+                if (zBuf == null) return true;
+                Vector3 m = (a + b) * 0.5f;
+                if (zBuf.IsPointVisible(m.X, m.Y, m.Z, bias)) return true;
+                Vector3 q1 = Vector3.Lerp(a, b, 0.25f);
+                Vector3 q3 = Vector3.Lerp(a, b, 0.75f);
+                return zBuf.IsPointVisible(q1.X, q1.Y, q1.Z, bias) || zBuf.IsPointVisible(q3.X, q3.Y, q3.Z, bias);
+            }
 
             using (Pen silhouettePen = new Pen(silColor, isGhostPiece ? 1.8f : 2.8f))
             using (Pen creasePen = new Pen(crsColor, 1.1f))
@@ -420,7 +570,8 @@ namespace PaintLike.Teddy
                         {
                             Vector3 pA = screenVerts[edge.A];
                             Vector3 pB = screenVerts[edge.B];
-                            g.DrawLine(creasePen, pA.X, pA.Y, pB.X, pB.Y);
+                            if (IsEdgeVisible(pA, pB, 4.5f))
+                                g.DrawLine(creasePen, pA.X, pA.Y, pB.X, pB.Y);
                         }
                         continue;
                     }
@@ -433,7 +584,8 @@ namespace PaintLike.Teddy
                     {
                         Vector3 pA = screenVerts[edge.A];
                         Vector3 pB = screenVerts[edge.B];
-                        g.DrawLine(silhouettePen, pA.X, pA.Y, pB.X, pB.Y);
+                        if (IsEdgeVisible(pA, pB, 8.5f))
+                            g.DrawLine(silhouettePen, pA.X, pA.Y, pB.X, pB.Y);
                     }
                     else if (leftFront && rightFront && edge.TriLeft >= 0 && edge.TriRight >= 0)
                     {
@@ -443,7 +595,8 @@ namespace PaintLike.Teddy
                         {
                             Vector3 pA = screenVerts[edge.A];
                             Vector3 pB = screenVerts[edge.B];
-                            g.DrawLine(creasePen, pA.X, pA.Y, pB.X, pB.Y);
+                            if (IsEdgeVisible(pA, pB, 5.0f))
+                                g.DrawLine(creasePen, pA.X, pA.Y, pB.X, pB.Y);
                         }
                     }
                 }
@@ -504,11 +657,12 @@ namespace PaintLike.Teddy
             VirtualTrackballCamera camera,
             Size viewport,
             bool isGhostPiece = false,
-            TeddyCutSurfaceViewMode cutSurfaceViewMode = TeddyCutSurfaceViewMode.HighlightedCrossSection)
+            TeddyCutSurfaceViewMode cutSurfaceViewMode = TeddyCutSurfaceViewMode.HighlightedCrossSection,
+            SoftwareDepthBuffer? zBuf = null)
         {
             foreach (var sl in mesh.SurfaceLines)
             {
-                DrawSingle3DPolyline(g, sl, camera, viewport, false, isGhostPiece);
+                DrawSingle3DPolyline(g, sl, camera, viewport, false, isGhostPiece, zBuf: zBuf);
             }
 
             // Vẽ đường viền đánh dấu vị trí thiết diện mặt cắt bằng NÉT ĐỨT
@@ -519,7 +673,8 @@ namespace PaintLike.Teddy
                     DrawSingle3DPolyline(g, cr, camera, viewport, false, isGhostPiece,
                         overrideColor: isGhostPiece ? Color.FromArgb(120, 225, 29, 72) : Color.FromArgb(235, 225, 29, 72),
                         overrideWidth: isGhostPiece ? 2.2f : 3.0f,
-                        forceDashed: true);
+                        forceDashed: true,
+                        zBuf: null); // Đường thiết diện nét đứt luôn hiển thị rõ vị trí vết cắt
                 }
             }
 
@@ -527,7 +682,8 @@ namespace PaintLike.Teddy
             if (mesh.ActiveBaseRing != null)
             {
                 DrawSingle3DPolyline(g, mesh.ActiveBaseRing, camera, viewport, true, isGhostPiece,
-                    forceDashed: mesh.ActiveBaseRing.IsDashed);
+                    forceDashed: mesh.ActiveBaseRing.IsDashed,
+                    zBuf: null);
             }
         }
 
@@ -540,7 +696,8 @@ namespace PaintLike.Teddy
             bool isGhostPiece = false,
             Color? overrideColor = null,
             float? overrideWidth = null,
-            bool forceDashed = false)
+            bool forceDashed = false,
+            SoftwareDepthBuffer? zBuf = null)
         {
             if (line.Points.Count < 2) return;
 
@@ -561,19 +718,44 @@ namespace PaintLike.Teddy
                     p.DashPattern = new float[] { 3.5f, 2.5f };
                 }
 
-                var screenPts = new List<PointF>(line.Points.Count + 1);
+                var projected = new List<Vector3>(line.Points.Count + 1);
                 foreach (var pt3D in line.Points)
-                {
-                    Vector3 sp = camera.ProjectToScreen(pt3D, viewport);
-                    screenPts.Add(new PointF(sp.X, sp.Y));
-                }
+                    projected.Add(camera.ProjectToScreen(pt3D, viewport));
+                if (line.IsClosedRing && projected.Count > 2)
+                    projected.Add(projected[0]);
 
-                if (line.IsClosedRing && screenPts.Count > 2)
+                if (zBuf == null)
                 {
-                    screenPts.Add(screenPts[0]);
+                    var screenPts = new PointF[projected.Count];
+                    for (int i = 0; i < projected.Count; i++)
+                        screenPts[i] = new PointF(projected[i].X, projected[i].Y);
+                    g.DrawLines(p, screenPts);
                 }
-
-                g.DrawLines(p, screenPts.ToArray());
+                else
+                {
+                    // [TV3-07] Tách các đoạn nét vẽ bề mặt theo Z-Buffer: chỉ vẽ những đoạn ở mặt nhìn thấy phía trước
+                    var visibleRun = new List<PointF>();
+                    for (int i = 0; i < projected.Count; i++)
+                    {
+                        Vector3 sp = projected[i];
+                        bool vis = zBuf.IsPointVisible(sp.X, sp.Y, sp.Z, depthBias: 7.0f);
+                        if (vis)
+                        {
+                            visibleRun.Add(new PointF(sp.X, sp.Y));
+                        }
+                        else if (visibleRun.Count >= 2)
+                        {
+                            g.DrawLines(p, visibleRun.ToArray());
+                            visibleRun.Clear();
+                        }
+                        else
+                        {
+                            visibleRun.Clear();
+                        }
+                    }
+                    if (visibleRun.Count >= 2)
+                        g.DrawLines(p, visibleRun.ToArray());
+                }
             }
         }
 
@@ -630,7 +812,14 @@ namespace PaintLike.Teddy
             DrawStudioViewportBackground(g, viewport, TeddyRenderStyle.PenAndInk);
 
             var dbg = mesh.DebugInfo;
-            if (dbg == null || dbg.BoundaryPolygon2D.Count < 3)
+            if (dbg == null)
+                return;
+
+            bool isExtrudeOrSmoothStep =
+                stepView == TeddyAlgorithmStepView.Step6_ExtrusionTwoPointer3D ||
+                stepView == TeddyAlgorithmStepView.Step7_BezierHoleSmoothing3D;
+
+            if (!isExtrudeOrSmoothStep && dbg.BoundaryPolygon2D.Count < 3)
                 return;
 
             Quaternion invCreationRot = Quaternion.Conjugate(dbg.CreationViewRotation);
@@ -651,7 +840,7 @@ namespace PaintLike.Teddy
                     boundScreen[i] = new PointF(sp.X, sp.Y);
                 }
             }
-            else
+            else if (nBound > 0)
             {
                 for (int i = 0; i < nBound; i++)
                     boundScreen[i] = Map2DToScreen(dbg.BoundaryPolygon2D[i]);
@@ -842,7 +1031,197 @@ namespace PaintLike.Teddy
                         $"Giữ Chuột Phải xoay 90° để thấy trục Spine (+Z đỏ, -Z xanh) & cung 1/4 elip K={TeddyInflationEngine.QuarterOvalSteps} tròn mượt tại biên Z=0!");
                     break;
                 }
+
+                case TeddyAlgorithmStepView.Step6_ExtrusionTwoPointer3D:
+                {
+                    // Vẽ lưới khối 3D mờ phía dưới để định vị rõ vị trí vòng đế & phần đùn
+                    RenderScene(g, viewport, mesh, camera, TeddyRenderStyle.SmoothShaded, null, null, drawBackground: false,
+                        cutPieceVisibility: TeddyCutPieceVisibility.GhostTransparent);
+
+                    if (dbg.ExtrudeBaseRing3D.Count >= 3)
+                    {
+                        var ringScreen = new PointF[dbg.ExtrudeBaseRing3D.Count + 1];
+                        for (int i = 0; i < dbg.ExtrudeBaseRing3D.Count; i++)
+                        {
+                            Vector3 sp = camera.ProjectToScreen(dbg.ExtrudeBaseRing3D[i], viewport);
+                            ringScreen[i] = new PointF(sp.X, sp.Y);
+                        }
+                        ringScreen[dbg.ExtrudeBaseRing3D.Count] = ringScreen[0];
+                        using Pen basePen = new Pen(Color.FromArgb(239, 68, 68), 3.2f);
+                        g.DrawLines(basePen, ringScreen);
+                    }
+
+                    // Vẽ các vòng lát cắt RMF màu Cyan
+                    using (Pen slicePen = new Pen(Color.FromArgb(185, 6, 182, 212), 1.6f))
+                    {
+                        foreach (var ring in dbg.ExtrudeSweepRings3D)
+                        {
+                            if (ring.Length < 3) continue;
+                            var pts = new PointF[ring.Length + 1];
+                            for (int i = 0; i < ring.Length; i++)
+                            {
+                                Vector3 sp = camera.ProjectToScreen(ring[i], viewport);
+                                pts[i] = new PointF(sp.X, sp.Y);
+                            }
+                            pts[ring.Length] = pts[0];
+                            g.DrawLines(slicePen, pts);
+                        }
+                    }
+
+                    // Vẽ các thanh nối 2 con trỏ (Two-Pointer Rungs L <-> R - Hình 18a) màu Cam
+                    using (Pen rungPen = new Pen(Color.FromArgb(245, 158, 11), 2.1f))
+                    using (SolidBrush ptrDot = new SolidBrush(Color.FromArgb(234, 88, 12)))
+                    {
+                        foreach (var rung in dbg.ExtrudePointerRungs3D)
+                        {
+                            Vector3 a = camera.ProjectToScreen(rung.LeftPt, viewport);
+                            Vector3 b = camera.ProjectToScreen(rung.RightPt, viewport);
+                            g.DrawLine(rungPen, a.X, a.Y, b.X, b.Y);
+                            g.FillEllipse(ptrDot, a.X - 3f, a.Y - 3f, 6f, 6f);
+                            g.FillEllipse(ptrDot, b.X - 3f, b.Y - 3f, 6f, 6f);
+                        }
+                    }
+
+                    // Vẽ nét đùn 3D chiếu lên mặt phẳng Ring-Normal
+                    if (dbg.ExtrudeStroke3D.Count >= 2)
+                    {
+                        var stPts = new PointF[dbg.ExtrudeStroke3D.Count];
+                        for (int i = 0; i < dbg.ExtrudeStroke3D.Count; i++)
+                        {
+                            Vector3 sp = camera.ProjectToScreen(dbg.ExtrudeStroke3D[i], viewport);
+                            stPts[i] = new PointF(sp.X, sp.Y);
+                        }
+                        using Pen strokePen = new Pen(Color.FromArgb(37, 99, 235), 3.0f);
+                        g.DrawLines(strokePen, stPts);
+                    }
+
+                    DrawStepLegendBanner(g, viewport,
+                        "BƯỚC 6 (TV2-07 & TV3-08, Hình 17–19): CHIẾU RING-NORMAL, QUÉT 2 CON TRỎ & KHUNG RMF",
+                        dbg.ExtrudeSweepRings3D.Count > 0
+                            ? $"Hiển thị Vòng Đế (đỏ), nét đùn Π_ext (xanh dương), các bậc 2 con trỏ L↔R (cam: {dbg.ExtrudePointerRungs3D.Count}) và lát cắt RMF (cyan)."
+                            : "Chưa có dữ liệu Đùn khối! Hãy [Đặt Vòng Đế] → vẽ nét vòm → bấm [Đùn / Khoét 3D] rồi quay lại Bước 6.");
+                    break;
+                }
+
+                case TeddyAlgorithmStepView.Step7_BezierHoleSmoothing3D:
+                {
+                    RenderScene(g, viewport, mesh, camera, TeddyRenderStyle.SmoothShaded, null, null, drawBackground: false,
+                        cutPieceVisibility: TeddyCutPieceVisibility.GhostTransparent);
+
+                    // Lưới tam giác Steiner-CDT vừa đắp vào lỗ thủng (xanh lục)
+                    using (SolidBrush triFill = new SolidBrush(Color.FromArgb(85, 34, 197, 94)))
+                    using (Pen triWire = new Pen(Color.FromArgb(180, 22, 163, 74), 1.3f))
+                    {
+                        foreach (var tri in dbg.SmoothSteinerTriangles3D)
+                        {
+                            Vector3 p0 = camera.ProjectToScreen(tri.A, viewport);
+                            Vector3 p1 = camera.ProjectToScreen(tri.B, viewport);
+                            Vector3 p2 = camera.ProjectToScreen(tri.C, viewport);
+                            var poly = new PointF[] { new(p0.X, p0.Y), new(p1.X, p1.Y), new(p2.X, p2.Y) };
+                            g.FillPolygon(triFill, poly);
+                            g.DrawPolygon(triWire, poly);
+                        }
+                    }
+
+                    // Vòng biên lỗ thủng sau khi xóa đa giác nhăn cũ (Đỏ)
+                    if (dbg.SmoothHoleBoundary3D.Count >= 3)
+                    {
+                        var holeScreen = new PointF[dbg.SmoothHoleBoundary3D.Count + 1];
+                        for (int i = 0; i < dbg.SmoothHoleBoundary3D.Count; i++)
+                        {
+                            Vector3 sp = camera.ProjectToScreen(dbg.SmoothHoleBoundary3D[i], viewport);
+                            holeScreen[i] = new PointF(sp.X, sp.Y);
+                        }
+                        holeScreen[dbg.SmoothHoleBoundary3D.Count] = holeScreen[0];
+                        using Pen holePen = new Pen(Color.FromArgb(225, 29, 72), 3.0f);
+                        g.DrawLines(holePen, holeScreen);
+                    }
+
+                    // Các đường cong vòm Cubic Bezier đa mặt phẳng khớp tiếp tuyến biên (Tím / Cam)
+                    using (Pen archPen = new Pen(Color.FromArgb(220, 147, 51, 234), 2.3f))
+                    {
+                        foreach (var arch in dbg.SmoothBezierArches3D)
+                        {
+                            if (arch.Length < 2) continue;
+                            var archPts = new PointF[arch.Length];
+                            for (int i = 0; i < arch.Length; i++)
+                            {
+                                Vector3 sp = camera.ProjectToScreen(arch[i], viewport);
+                                archPts[i] = new PointF(sp.X, sp.Y);
+                            }
+                            g.DrawLines(archPen, archPts);
+                        }
+                    }
+
+                    DrawStepLegendBanner(g, viewport,
+                        "BƯỚC 7 (TV2-09 & TV3-08, Hình 10 & 21): XÓA LỖ, LƯỚI STEINER-CDT & VÒM CUBIC BEZIER",
+                        dbg.SmoothHoleBoundary3D.Count > 0
+                            ? $"Biên lỗ đã xóa lưới cũ (đỏ), lưới đắp Steiner-CDT (xanh lá: {dbg.SmoothSteinerTriangles3D.Count} mặt) và vòm tiếp tuyến Cubic Bezier (tím)."
+                            : "Chưa có dữ liệu Làm Mượt Bezier! Hãy khoanh vòng chọn trên khối và bấm [Mượt Bezier 3D] rồi xem Bước 7.");
+                    break;
+                }
             }
+        }
+
+        /// <summary>
+        /// [TV3-09] Vẽ thẻ thống kê Benchmark Hình học 3D & Kiểm định Euler ở góc trái dưới Viewport.
+        /// </summary>
+        public static void DrawBenchmarkOverlayCard(
+            Graphics g,
+            Size viewport,
+            TeddyMesh? activeMesh,
+            int totalMeshes,
+            double lastAlgoMs,
+            string lastAlgoName)
+        {
+            if (viewport.Width < 360 || viewport.Height < 220) return;
+
+            const int w = 310;
+            const int h = 122;
+            Rectangle card = new Rectangle(14, viewport.Height - h - 14, w, h);
+
+            SmoothingMode oldMode = g.SmoothingMode;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            using (GraphicsPath gp = UITheme.CreateRoundedRect(card, 9))
+            using (SolidBrush bg = new SolidBrush(Color.FromArgb(242, 255, 255, 255)))
+            using (Pen bd = new Pen(UITheme.AccentPrimary, 1.3f))
+            {
+                g.FillPath(bg, gp);
+                g.DrawPath(bd, gp);
+            }
+
+            Rectangle titleRect = new Rectangle(card.X + 10, card.Y + 6, card.Width - 20, 18);
+            TextRenderer.DrawText(g, "BENCHMARK HÌNH HỌC 3D (TV1-09 & TV3-09)", UITheme.FontGroupHeader, titleRect, UITheme.AccentPrimary,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+
+            string line1, line2, line3, line4;
+            if (activeMesh == null || activeMesh.IsEmpty)
+            {
+                line1 = $"Thuật toán: {lastAlgoName} ({lastAlgoMs:F1} ms)";
+                line2 = "Chưa có khối 3D đang chọn để kiểm định Euler.";
+                line3 = "Bấm [B] hoặc thanh trạng thái góc phải để ẩn/hiện.";
+                line4 = $"Tổng số khối trong cảnh: {totalMeshes}";
+            }
+            else
+            {
+                var rep = activeMesh.ValidateManifoldAndEuler();
+                activeMesh.ComputeTriangleAngleStats(out float minAng, out float avgMinAng);
+                string manifoldText = rep.IsClosedWatertightManifold
+                    ? "Kín Đa Tạp (Watertight)"
+                    : $"Hở {rep.BoundaryEdgeCount} cạnh / NM {rep.NonManifoldEdgeCount}";
+                line1 = $"Thuật toán: {lastAlgoName}  |  {lastAlgoMs:F1} ms";
+                line2 = $"V={rep.VertexCount}  E={rep.EdgeCount}  F={rep.FaceCount}  |  χ=V-E+F = {rep.EulerCharacteristic}";
+                line3 = $"Đa tạp: {manifoldText}";
+                line4 = $"Góc nhỏ nhất: {minAng:F1}°  |  TB: {avgMinAng:F1}°  (Khối: {totalMeshes})";
+            }
+
+            TextRenderer.DrawText(g, line1, UITheme.FontSmallBold, new Rectangle(card.X + 10, card.Y + 28, card.Width - 20, 18), UITheme.TextPrimary, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            TextRenderer.DrawText(g, line2, UITheme.FontMono, new Rectangle(card.X + 10, card.Y + 49, card.Width - 20, 18), UITheme.TextPrimary, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            TextRenderer.DrawText(g, line3, UITheme.FontSmall, new Rectangle(card.X + 10, card.Y + 70, card.Width - 20, 18), UITheme.AccentSuccess, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            TextRenderer.DrawText(g, line4, UITheme.FontSmall, new Rectangle(card.X + 10, card.Y + 91, card.Width - 20, 18), UITheme.TextSecondary, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+
+            g.SmoothingMode = oldMode;
         }
 
         private static void DrawStepLegendBanner(Graphics g, Size viewport, string title, string subtitle)

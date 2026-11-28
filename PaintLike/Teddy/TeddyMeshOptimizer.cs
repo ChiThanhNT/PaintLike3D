@@ -12,8 +12,9 @@ namespace PaintLike.Teddy
     public static class TeddyMeshOptimizer
     {
         /// <summary>
-        /// [Mục 5.1 cuối trang 6] Loại bỏ các cạnh quá ngắn (Edge Collapse) và tam giác suy biến diện tích nhỏ,
-        /// kết hợp cân bằng chất lượng lưới tam giác.
+        /// [TV1-05 & TV1-09 - Hoppe 1993 / Botsch-Kobbelt] Tối ưu hóa & Tinh chỉnh chất lượng lưới 3D:
+        /// Kết hợp gộp cạnh ngắn AN TOÀN ĐA TẠP (kiểm tra Link Condition: |Lk(u) ∩ Lk(v)| == 2)
+        /// để đảm bảo mọi lưới khép kín sau tối ưu luôn bảo toàn đặc trưng Euler V - E + F = 2.
         /// </summary>
         public static int RefineMesh(TeddyMesh mesh, float minEdgeLength = 2.8f, HashSet<int>? protectedVertices = null)
         {
@@ -37,76 +38,470 @@ namespace PaintLike.Teddy
                 minLenSq = MathF.Max(minLenSq, adaptiveMin * adaptiveMin);
             }
 
-            // Gộp các cạnh quá ngắn về trung điểm — khóa mỗi đỉnh tối đa 1 lần để tránh hiệu ứng dây chuyền làm méo vùng cực tròn
-            int[] parent = new int[mesh.Vertices.Count];
-            bool[] locked = new bool[mesh.Vertices.Count];
-            for (int i = 0; i < parent.Length; i++) parent[i] = i;
-
-            int FindRoot(int x)
-            {
-                while (parent[x] != x)
-                {
-                    parent[x] = parent[parent[x]];
-                    x = parent[x];
-                }
-                return x;
-            }
-
-            foreach (var tri in mesh.Triangles)
-            {
-                int[] v = new int[] { FindRoot(tri.V0), FindRoot(tri.V1), FindRoot(tri.V2) };
-                for (int e = 0; e < 3; e++)
-                {
-                    int a = v[e];
-                    int b = v[(e + 1) % 3];
-                    if (protectedVertices != null && (protectedVertices.Contains(a) || protectedVertices.Contains(b)))
-                        continue;
-
-                    if (a != b && !locked[a] && !locked[b] && Vector3.DistanceSquared(mesh.Vertices[a], mesh.Vertices[b]) < minLenSq)
-                    {
-                        Vector3 mid = 0.5f * (mesh.Vertices[a] + mesh.Vertices[b]);
-                        int keep = Math.Min(a, b);
-                        int drop = Math.Max(a, b);
-                        mesh.Vertices[keep] = mid;
-                        parent[drop] = keep;
-                        locked[keep] = true;
-                        locked[drop] = true;
-                        collapsedCount++;
-                    }
-                }
-            }
-
-            // Cập nhật lại chỉ số đỉnh của các tam giác và loại bỏ tam giác suy biến
-            var validTriangles = new List<TeddyTriangle>(mesh.Triangles.Count);
-            foreach (var tri in mesh.Triangles)
-            {
-                int i0 = FindRoot(tri.V0);
-                int i1 = FindRoot(tri.V1);
-                int i2 = FindRoot(tri.V2);
-
-                if (i0 == i1 || i1 == i2 || i2 == i0)
-                    continue;
-
-                Vector3 p0 = mesh.Vertices[i0];
-                Vector3 p1 = mesh.Vertices[i1];
-                Vector3 p2 = mesh.Vertices[i2];
-                float doubleArea = Vector3.Cross(p1 - p0, p2 - p0).Length();
-                if (doubleArea <= 1e-4f)
-                    continue;
-
-                tri.V0 = i0;
-                tri.V1 = i1;
-                tri.V2 = i2;
-                validTriangles.Add(tri);
-            }
-
-            mesh.Triangles.Clear();
-            mesh.Triangles.AddRange(validTriangles);
+            // [TV1-09] Gộp cạnh ngắn có kiểm tra Link Condition để tuyệt đối không tạo cạnh suy biến hay non-manifold
+            collapsedCount = CollapseShortEdgesSafely(mesh, minLenSq, protectedVertices);
 
             TeddyExtrudeCutOp.CompactMeshVertices(mesh);
             mesh.BuildConnectivity();
             mesh.RecalculateNormals();
             return collapsedCount;
+        }
+
+        /// <summary>
+        /// [TV1-09] Bộ Tái Chia Lưới Đẳng Hướng Bảo Toàn Đa Tạp 4 Pha (Isotropic Manifold Remesher):
+        /// 1. Long-Edge Split (cạnh > 4/3 L_target)
+        /// 2. Link-Condition Safe Short-Edge Collapse (cạnh < 4/5 L_target, giữ Link(u) ∩ Link(v) == {w1, w2})
+        /// 3. Valence-6 Edge Flip (cân bằng bậc đỉnh tiến về 6)
+        /// 4. Tangential Taubin Fairing (làm đều lưới trên mặt tiếp tuyến không hao hụt thể tích)
+        /// </summary>
+        public static int IsotropicManifoldRemesh(
+            TeddyMesh mesh,
+            float targetEdgeLength = 0f,
+            int iterations = 1,
+            HashSet<int>? protectedVertices = null)
+        {
+            if (mesh == null || mesh.IsEmpty || mesh.Triangles.Count < 4)
+                return 0;
+
+            float targetL = targetEdgeLength;
+            if (targetL <= 1e-3f)
+            {
+                double sumLen = 0.0;
+                int cnt = 0;
+                foreach (var tri in mesh.Triangles)
+                {
+                    sumLen += Vector3.Distance(mesh.Vertices[tri.V0], mesh.Vertices[tri.V1]);
+                    sumLen += Vector3.Distance(mesh.Vertices[tri.V1], mesh.Vertices[tri.V2]);
+                    sumLen += Vector3.Distance(mesh.Vertices[tri.V2], mesh.Vertices[tri.V0]);
+                    cnt += 3;
+                }
+                targetL = cnt > 0 ? Math.Clamp((float)(sumLen / cnt), 6f, 60f) : 16f;
+            }
+
+            float maxLen = (4f / 3f) * targetL;
+            float minLen = (4f / 5f) * targetL;
+            int totalOps = 0;
+
+            for (int iter = 0; iter < Math.Max(1, iterations); iter++)
+            {
+                // Pha 1: Chia đôi các cạnh quá dài (> 4/3 L) bảo toàn đa tạp kín (1-to-2 hoặc 4-subdivision)
+                totalOps += SplitLongEdgesManifold(mesh, maxLen);
+
+                // Pha 2: Gộp các cạnh quá ngắn (< 4/5 L) chỉ khi thỏa mãn Link Condition
+                totalOps += CollapseShortEdgesSafely(mesh, minLen * minLen, protectedVertices);
+
+                // Pha 3: Lật cạnh cân bằng bậc đỉnh Valence -> 6 và cải thiện góc nhỏ nhất
+                totalOps += FlipEdgesToValence6(mesh, protectedVertices);
+
+                // Pha 4: Tangential Fairing (dịch chuyển đỉnh theo mặt phẳng tiếp tuyến để giữ nguyên thể tích)
+                ApplyTangentialTaubinFairing(mesh, 2, 0.35f, -0.36f, protectedVertices);
+            }
+
+            TeddyExtrudeCutOp.CompactMeshVertices(mesh);
+            mesh.BuildConnectivity();
+            mesh.RecalculateNormals();
+            return totalOps;
+        }
+
+        private static int SplitLongEdgesManifold(TeddyMesh mesh, float maxEdgeLen)
+        {
+            if (mesh.Triangles.Count > 14000) return 0;
+
+            float maxLenSq = maxEdgeLen * maxEdgeLen;
+            var edgeSplitMid = new Dictionary<(int, int), int>();
+
+            foreach (var tri in mesh.Triangles)
+            {
+                int[] v = { tri.V0, tri.V1, tri.V2 };
+                for (int e = 0; e < 3; e++)
+                {
+                    int a = v[e];
+                    int b = v[(e + 1) % 3];
+                    var key = a < b ? (a, b) : (b, a);
+                    if (!edgeSplitMid.ContainsKey(key) && Vector3.DistanceSquared(mesh.Vertices[a], mesh.Vertices[b]) > maxLenSq)
+                    {
+                        Vector3 mid = 0.5f * (mesh.Vertices[a] + mesh.Vertices[b]);
+                        int mIdx = mesh.Vertices.Count;
+                        mesh.Vertices.Add(mid);
+                        edgeSplitMid[key] = mIdx;
+                    }
+                }
+            }
+
+            if (edgeSplitMid.Count == 0) return 0;
+
+            var newTris = new List<TeddyTriangle>(mesh.Triangles.Count + edgeSplitMid.Count * 2);
+            foreach (var tri in mesh.Triangles)
+            {
+                int v0 = tri.V0, v1 = tri.V1, v2 = tri.V2;
+                bool s01 = edgeSplitMid.TryGetValue(v0 < v1 ? (v0, v1) : (v1, v0), out int m01);
+                bool s12 = edgeSplitMid.TryGetValue(v1 < v2 ? (v1, v2) : (v2, v1), out int m12);
+                bool s20 = edgeSplitMid.TryGetValue(v2 < v0 ? (v2, v0) : (v0, v2), out int m20);
+                int splitCount = (s01 ? 1 : 0) + (s12 ? 1 : 0) + (s20 ? 1 : 0);
+
+                if (splitCount == 0)
+                {
+                    newTris.Add(tri);
+                }
+                else if (splitCount == 3)
+                {
+                    newTris.Add(new TeddyTriangle(v0, m01, m20, tri.Category, tri.CustomColor, tri.IsCutCap));
+                    newTris.Add(new TeddyTriangle(m01, v1, m12, tri.Category, tri.CustomColor, tri.IsCutCap));
+                    newTris.Add(new TeddyTriangle(m20, m12, v2, tri.Category, tri.CustomColor, tri.IsCutCap));
+                    newTris.Add(new TeddyTriangle(m01, m12, m20, tri.Category, tri.CustomColor, tri.IsCutCap));
+                }
+                else if (splitCount == 1)
+                {
+                    int a, b, c, mAB;
+                    if (s01) { a = v0; b = v1; c = v2; mAB = m01; }
+                    else if (s12) { a = v1; b = v2; c = v0; mAB = m12; }
+                    else { a = v2; b = v0; c = v1; mAB = m20; }
+
+                    newTris.Add(new TeddyTriangle(a, mAB, c, tri.Category, tri.CustomColor, tri.IsCutCap));
+                    newTris.Add(new TeddyTriangle(mAB, b, c, tri.Category, tri.CustomColor, tri.IsCutCap));
+                }
+                else
+                {
+                    int a, b, c, mAB, mBC;
+                    if (!s20) { a = v0; b = v1; c = v2; mAB = m01; mBC = m12; }
+                    else if (!s01) { a = v1; b = v2; c = v0; mAB = m12; mBC = m20; }
+                    else { a = v2; b = v0; c = v1; mAB = m20; mBC = m01; }
+
+                    newTris.Add(new TeddyTriangle(mAB, b, mBC, tri.Category, tri.CustomColor, tri.IsCutCap));
+                    newTris.Add(new TeddyTriangle(a, mAB, mBC, tri.Category, tri.CustomColor, tri.IsCutCap));
+                    newTris.Add(new TeddyTriangle(a, mBC, c, tri.Category, tri.CustomColor, tri.IsCutCap));
+                }
+            }
+
+            mesh.Triangles.Clear();
+            mesh.Triangles.AddRange(newTris);
+            return edgeSplitMid.Count;
+        }
+
+        private static int CollapseShortEdgesSafely(TeddyMesh mesh, float minLenSq, HashSet<int>? protectedVertices)
+        {
+            int nVerts = mesh.Vertices.Count;
+            if (nVerts == 0 || mesh.Triangles.Count < 4) return 0;
+
+            var vertexNeighbors = new HashSet<int>[nVerts];
+            var vertexTris = new List<int>[nVerts];
+            var edgeTriCount = new Dictionary<(int, int), List<int>>(mesh.Triangles.Count * 2);
+
+            for (int i = 0; i < nVerts; i++)
+            {
+                vertexNeighbors[i] = new HashSet<int>();
+                vertexTris[i] = new List<int>(6);
+            }
+
+            for (int tIdx = 0; tIdx < mesh.Triangles.Count; tIdx++)
+            {
+                var tri = mesh.Triangles[tIdx];
+                if (tri.V0 == tri.V1 || tri.V1 == tri.V2 || tri.V2 == tri.V0) continue;
+
+                vertexTris[tri.V0].Add(tIdx);
+                vertexTris[tri.V1].Add(tIdx);
+                vertexTris[tri.V2].Add(tIdx);
+
+                vertexNeighbors[tri.V0].Add(tri.V1); vertexNeighbors[tri.V0].Add(tri.V2);
+                vertexNeighbors[tri.V1].Add(tri.V0); vertexNeighbors[tri.V1].Add(tri.V2);
+                vertexNeighbors[tri.V2].Add(tri.V0); vertexNeighbors[tri.V2].Add(tri.V1);
+
+                int[] v = { tri.V0, tri.V1, tri.V2 };
+                for (int e = 0; e < 3; e++)
+                {
+                    int a = v[e], b = v[(e + 1) % 3];
+                    var key = a < b ? (a, b) : (b, a);
+                    if (!edgeTriCount.TryGetValue(key, out var list))
+                    {
+                        list = new List<int>(2);
+                        edgeTriCount[key] = list;
+                    }
+                    list.Add(tIdx);
+                }
+            }
+
+            bool[] locked = new bool[nVerts];
+            bool[] deadTri = new bool[mesh.Triangles.Count];
+            int[] remap = new int[nVerts];
+            for (int i = 0; i < nVerts; i++) remap[i] = i;
+
+            int collapsedCount = 0;
+
+            foreach (var kv in edgeTriCount)
+            {
+                int a = kv.Key.Item1;
+                int b = kv.Key.Item2;
+                var sharedTris = kv.Value;
+
+                if (locked[a] || locked[b]) continue;
+                if (protectedVertices != null && (protectedVertices.Contains(a) || protectedVertices.Contains(b))) continue;
+                if (sharedTris.Count != 2) continue; // Chỉ gộp cạnh đa tạp nằm giữa đúng 2 tam giác
+
+                int t1Idx = sharedTris[0];
+                int t2Idx = sharedTris[1];
+                if (deadTri[t1Idx] || deadTri[t2Idx]) continue;
+
+                float distSq = Vector3.DistanceSquared(mesh.Vertices[a], mesh.Vertices[b]);
+                if (distSq >= minLenSq) continue;
+
+                // Kiểm tra Link Condition: Lk(a) ∩ Lk(b) phải có đúng 2 đỉnh đối diện của t1 và t2!
+                int opp1 = GetOppositeVert(mesh.Triangles[t1Idx], a, b);
+                int opp2 = GetOppositeVert(mesh.Triangles[t2Idx], a, b);
+                if (opp1 < 0 || opp2 < 0 || opp1 == opp2) continue;
+
+                int commonCount = 0;
+                bool linkOk = true;
+                foreach (int nb in vertexNeighbors[a])
+                {
+                    if (vertexNeighbors[b].Contains(nb))
+                    {
+                        commonCount++;
+                        if (nb != opp1 && nb != opp2)
+                        {
+                            linkOk = false;
+                            break;
+                        }
+                    }
+                }
+                if (!linkOk || commonCount != 2) continue;
+
+                // Bảo toàn hai mảnh cắt / nắp cắt không gộp lẫn giữa IsCutCap và thân ngoài
+                if (mesh.Triangles[t1Idx].IsCutCap != mesh.Triangles[t2Idx].IsCutCap) continue;
+
+                Vector3 mid = 0.5f * (mesh.Vertices[a] + mesh.Vertices[b]);
+
+                // Kiểm tra chống lật pháp tuyến tam giác xung quanh (u, v) sau khi gộp về mid
+                bool normalSafe = true;
+                foreach (int tIdx in vertexTris[a])
+                {
+                    if (deadTri[tIdx] || tIdx == t1Idx || tIdx == t2Idx) continue;
+                    if (!WouldRemainValidAfterMove(mesh, mesh.Triangles[tIdx], a, b, mid)) { normalSafe = false; break; }
+                }
+                if (normalSafe)
+                {
+                    foreach (int tIdx in vertexTris[b])
+                    {
+                        if (deadTri[tIdx] || tIdx == t1Idx || tIdx == t2Idx) continue;
+                        if (!WouldRemainValidAfterMove(mesh, mesh.Triangles[tIdx], a, b, mid)) { normalSafe = false; break; }
+                    }
+                }
+                if (!normalSafe) continue;
+
+                mesh.Vertices[a] = mid;
+                remap[b] = a;
+                deadTri[t1Idx] = true;
+                deadTri[t2Idx] = true;
+                locked[a] = true;
+                locked[b] = true;
+                // Khóa toàn bộ láng giềng 1-ring quanh (a, b) trong lượt này để tuyệt đối bảo toàn Link Condition (không sinh non-manifold)
+                foreach (int nb in vertexNeighbors[a]) locked[nb] = true;
+                foreach (int nb in vertexNeighbors[b]) locked[nb] = true;
+                collapsedCount++;
+            }
+
+            if (collapsedCount == 0)
+            {
+                // Vẫn lọc bỏ tam giác suy biến diện tích ~0 nếu có
+                var cleanTris = new List<TeddyTriangle>(mesh.Triangles.Count);
+                foreach (var tri in mesh.Triangles)
+                {
+                    if (tri.V0 == tri.V1 || tri.V1 == tri.V2 || tri.V2 == tri.V0) continue;
+                    if (Vector3.Cross(mesh.Vertices[tri.V1] - mesh.Vertices[tri.V0], mesh.Vertices[tri.V2] - mesh.Vertices[tri.V0]).LengthSquared() <= 1e-8f)
+                        continue;
+                    cleanTris.Add(tri);
+                }
+                mesh.Triangles.Clear();
+                mesh.Triangles.AddRange(cleanTris);
+                return 0;
+            }
+
+            var validTriangles = new List<TeddyTriangle>(mesh.Triangles.Count);
+            for (int tIdx = 0; tIdx < mesh.Triangles.Count; tIdx++)
+            {
+                if (deadTri[tIdx]) continue;
+                var tri = mesh.Triangles[tIdx];
+                int i0 = remap[tri.V0];
+                int i1 = remap[tri.V1];
+                int i2 = remap[tri.V2];
+                if (i0 == i1 || i1 == i2 || i2 == i0) continue;
+
+                if (Vector3.Cross(mesh.Vertices[i1] - mesh.Vertices[i0], mesh.Vertices[i2] - mesh.Vertices[i0]).LengthSquared() <= 1e-8f)
+                    continue;
+
+                tri.V0 = i0; tri.V1 = i1; tri.V2 = i2;
+                validTriangles.Add(tri);
+            }
+
+            mesh.Triangles.Clear();
+            mesh.Triangles.AddRange(validTriangles);
+            return collapsedCount;
+        }
+
+        private static bool WouldRemainValidAfterMove(TeddyMesh mesh, TeddyTriangle tri, int keepV, int dropV, Vector3 newPos)
+        {
+            Vector3 o0 = mesh.Vertices[tri.V0];
+            Vector3 o1 = mesh.Vertices[tri.V1];
+            Vector3 o2 = mesh.Vertices[tri.V2];
+            Vector3 oldN = Vector3.Cross(o1 - o0, o2 - o0);
+
+            Vector3 n0 = (tri.V0 == keepV || tri.V0 == dropV) ? newPos : o0;
+            Vector3 n1 = (tri.V1 == keepV || tri.V1 == dropV) ? newPos : o1;
+            Vector3 n2 = (tri.V2 == keepV || tri.V2 == dropV) ? newPos : o2;
+            Vector3 newN = Vector3.Cross(n1 - n0, n2 - n0);
+
+            float oldLen = oldN.Length();
+            float newLen = newN.Length();
+            if (newLen <= 1e-4f) return false;
+            if (oldLen <= 1e-5f) return true;
+            return Vector3.Dot(oldN / oldLen, newN / newLen) > 0.25f;
+        }
+
+        private static int GetOppositeVert(TeddyTriangle tri, int a, int b)
+        {
+            if (tri.V0 != a && tri.V0 != b) return tri.V0;
+            if (tri.V1 != a && tri.V1 != b) return tri.V1;
+            if (tri.V2 != a && tri.V2 != b) return tri.V2;
+            return -1;
+        }
+
+        private static int FlipEdgesToValence6(TeddyMesh mesh, HashSet<int>? protectedVertices)
+        {
+            mesh.BuildConnectivity();
+            mesh.RecalculateNormals();
+
+            int nVerts = mesh.Vertices.Count;
+            if (nVerts == 0 || mesh.Edges.Count == 0) return 0;
+
+            int[] valence = new int[nVerts];
+            var edgeSet = new HashSet<(int, int)>(mesh.Edges.Count);
+            foreach (var edge in mesh.Edges)
+            {
+                valence[edge.A]++;
+                valence[edge.B]++;
+                edgeSet.Add(edge.A < edge.B ? (edge.A, edge.B) : (edge.B, edge.A));
+            }
+
+            bool[] touchedTri = new bool[mesh.Triangles.Count];
+            int flipped = 0;
+
+            foreach (var edge in mesh.Edges)
+            {
+                if (edge.TriLeft < 0 || edge.TriRight < 0) continue;
+                if (touchedTri[edge.TriLeft] || touchedTri[edge.TriRight]) continue;
+
+                int a = edge.A, b = edge.B;
+                if (protectedVertices != null && (protectedVertices.Contains(a) || protectedVertices.Contains(b)))
+                    continue;
+
+                var t1 = mesh.Triangles[edge.TriLeft];
+                var t2 = mesh.Triangles[edge.TriRight];
+                if (t1.IsCutCap != t2.IsCutCap) continue;
+                if (Vector3.Dot(t1.FaceNormal, t2.FaceNormal) < 0.78f) continue;
+
+                int c = GetOppositeVert(t1, a, b);
+                int d = GetOppositeVert(t2, a, b);
+                if (c < 0 || d < 0 || c == d) continue;
+
+                // Kiểm tra (c, d) đã tồn tại trong edgeSet (bao gồm các cạnh mới flip ở lượt này) chưa
+                var newKey = c < d ? (c, d) : (d, c);
+                if (edgeSet.Contains(newKey)) continue;
+
+                int beforeErr = (valence[a] - 6) * (valence[a] - 6) + (valence[b] - 6) * (valence[b] - 6)
+                              + (valence[c] - 6) * (valence[c] - 6) + (valence[d] - 6) * (valence[d] - 6);
+                int afterErr = (valence[a] - 7) * (valence[a] - 7) + (valence[b] - 7) * (valence[b] - 7)
+                             + (valence[c] - 5) * (valence[c] - 5) + (valence[d] - 5) * (valence[d] - 5);
+                if (afterErr >= beforeErr) continue;
+
+                // Bảo toàn hướng pháp tuyến trước/sau flip bất kể thứ tự (a, b) trong t1
+                Vector3 avgNorm = Vector3.Normalize(t1.FaceNormal + t2.FaceNormal);
+                Vector3 pa = mesh.Vertices[a], pb = mesh.Vertices[b], pc = mesh.Vertices[c], pd = mesh.Vertices[d];
+
+                Vector3 n1Raw = Vector3.Cross(pd - pc, pa - pc);
+                bool flipOrder = Vector3.Dot(n1Raw, avgNorm) < 0f;
+                Vector3 n1 = flipOrder ? -n1Raw : n1Raw;
+                Vector3 n2 = flipOrder ? Vector3.Cross(pd - pc, pb - pc) : Vector3.Cross(pb - pc, pd - pc);
+
+                float l1 = n1.Length();
+                float l2 = n2.Length();
+                if (l1 <= 1e-4f || l2 <= 1e-4f) continue;
+                if (Vector3.Dot(n1 / l1, avgNorm) < 0.35f || Vector3.Dot(n2 / l2, avgNorm) < 0.35f) continue;
+
+                if (!flipOrder)
+                {
+                    t1.V0 = c; t1.V1 = d; t1.V2 = a;
+                    t2.V0 = c; t2.V1 = b; t2.V2 = d;
+                }
+                else
+                {
+                    t1.V0 = c; t1.V1 = a; t1.V2 = d;
+                    t2.V0 = c; t2.V1 = d; t2.V2 = b;
+                }
+
+                edgeSet.Remove(a < b ? (a, b) : (b, a));
+                edgeSet.Add(newKey);
+                valence[a]--; valence[b]--;
+                valence[c]++; valence[d]++;
+                touchedTri[edge.TriLeft] = true;
+                touchedTri[edge.TriRight] = true;
+                flipped++;
+            }
+
+            return flipped;
+        }
+
+        private static void ApplyTangentialTaubinFairing(
+            TeddyMesh mesh,
+            int iterations,
+            float lambda,
+            float mu,
+            HashSet<int>? protectedVertices)
+        {
+            mesh.RecalculateNormals();
+            int nVerts = mesh.Vertices.Count;
+            var neighbors = new List<int>[nVerts];
+            for (int i = 0; i < nVerts; i++) neighbors[i] = new List<int>(6);
+
+            foreach (var tri in mesh.Triangles)
+            {
+                if (!neighbors[tri.V0].Contains(tri.V1)) neighbors[tri.V0].Add(tri.V1);
+                if (!neighbors[tri.V0].Contains(tri.V2)) neighbors[tri.V0].Add(tri.V2);
+                if (!neighbors[tri.V1].Contains(tri.V0)) neighbors[tri.V1].Add(tri.V0);
+                if (!neighbors[tri.V1].Contains(tri.V2)) neighbors[tri.V1].Add(tri.V2);
+                if (!neighbors[tri.V2].Contains(tri.V0)) neighbors[tri.V2].Add(tri.V0);
+                if (!neighbors[tri.V2].Contains(tri.V1)) neighbors[tri.V2].Add(tri.V1);
+            }
+
+            Vector3[] temp = new Vector3[nVerts];
+            void Step(float factor)
+            {
+                for (int i = 0; i < nVerts; i++)
+                {
+                    if ((protectedVertices != null && protectedVertices.Contains(i)) || neighbors[i].Count == 0)
+                    {
+                        temp[i] = mesh.Vertices[i];
+                        continue;
+                    }
+
+                    Vector3 avg = Vector3.Zero;
+                    foreach (int nb in neighbors[i]) avg += mesh.Vertices[nb];
+                    avg /= neighbors[i].Count;
+
+                    Vector3 lap = avg - mesh.Vertices[i];
+                    Vector3 nrm = i < mesh.VertexNormals.Count ? mesh.VertexNormals[i] : Vector3.UnitZ;
+                    // Chỉ dịch chuyển theo mặt phẳng tiếp tuyến (Tangential relaxation) -> bảo toàn thể tích!
+                    Vector3 tanLap = lap - Vector3.Dot(lap, nrm) * nrm;
+                    temp[i] = mesh.Vertices[i] + factor * tanLap;
+                }
+
+                for (int i = 0; i < nVerts; i++)
+                    mesh.Vertices[i] = temp[i];
+            }
+
+            for (int it = 0; it < iterations; it++)
+            {
+                Step(lambda);
+                Step(mu);
+            }
         }
 
         /// <summary>

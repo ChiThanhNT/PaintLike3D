@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -84,6 +85,11 @@ namespace PaintLike.Teddy
         private bool _flipCutRemoveSide = false;
         private float _cutAmplitudePx = 22f;
         private int _cutPeriodCount = 5;
+
+        // [TV3-09] Thống kê Benchmark Hình học 3D & Thời gian thực thi thuật toán
+        private bool _showBenchmarkOverlay = false;
+        private double _lastAlgoExecutionMs = 0.0;
+        private string _lastAlgoName = "Sẵn sàng";
 
         // UI Controls
         private Panel _panelTopRibbon = null!;
@@ -422,7 +428,7 @@ namespace PaintLike.Teddy
             _btnApplyInflate3D.Click += (s, e) => ApplyInflate3DFromSketch();
 
             _btnApplyPaint3D = CreateRibbonButton(_panelActionBar, new Rectangle(290, 6, 104, 28), IconType.Rename, "Dán Nét 3D", ButtonVariant.Default,
-                "Chiếu nét 2D bám sát từng cạnh tam giác bề mặt 3D & chặn nếp gấp khuất (TV2-06, Hình 16); vẽ gạch zíc-zắc (Scribble) để xóa nét mặt trước");
+                "Chiếu nét 2D bám sát từng cạnh tam giác bề mặt 3D & chặn nếp gấp khuất (TV2-06); vẽ gạch zíc-zắc để xóa nét mặt trước; Shift+Click để tạo Gờ Sắc 3D (TV2-10)");
             _btnApplyPaint3D.Click += (s, e) => ApplySurfacePaintFromSketch();
 
             _btnApplyFillColor3D = CreateRibbonButton(_panelActionBar, new Rectangle(398, 6, 102, 28), IconType.ColorPalette, "Tô Vùng 3D", ButtonVariant.Default,
@@ -434,19 +440,19 @@ namespace PaintLike.Teddy
             _btnApplyBaseRing3D.Click += (s, e) => ApplySetBaseRingFromSketch();
 
             _btnApplyExtrude3D = CreateRibbonButton(_panelActionBar, new Rectangle(618, 6, 120, 28), IconType.Arrows, "Đùn / Khoét 3D", ButtonVariant.Accent,
-                "Từ Vòng Đế đỏ + nét vòm 2D → Thực hiện Đùn lồi (Extrusion) hoặc Khoét lõm (Cavity) 2 con trỏ (Mục 5.3)");
+                "Từ Vòng Đế đỏ + nét vòm 2D → Đùn liền khối RMF (hoặc Khoét lõm 2 con trỏ - TV2-07). Giữ Shift khi bấm để Đùn thành khối rời!");
             _btnApplyExtrude3D.Click += (s, e) => ApplyExtrudeOrCavityFromSketch();
 
             _btnApplyCut3D = CreateRibbonButton(_panelActionBar, new Rectangle(742, 6, 106, 28), IconType.Scissors, "Cắt Khối 3D", ButtonVariant.Danger,
-                "Dùng đường cắt 2D trong bộ đệm (hoặc cắt ngang tâm khối theo mẫu đang chọn) để Cắt vật thể 3D (Mục 5.4)");
+                "Dùng đường cắt 2D trong bộ đệm (tự động nhận diện Cắt Xuyên hoặc Cắn Cục Bộ Hình 8) & đóng nắp Steiner-CDT (TV2-08)");
             _btnApplyCut3D.Click += (s, e) => ApplyCut3DFromSketch();
 
             _btnApplyBezierSmooth3D = CreateRibbonButton(_panelActionBar, new Rectangle(852, 6, 122, 28), IconType.Filter, "Mượt Bezier 3D", ButtonVariant.Default,
-                "Làm mượt bề mặt trong Vòng Đế đỏ / nét khoanh 2D bằng nội suy Bezier & Taubin Fairing (Mục 5.5)");
+                "Xóa lỗ nhăn cũ & đắp lưới Steiner-CDT + vòm Cubic Bezier khớp tiếp tuyến mặt ngoài (TV2-09 Hình 10 & 21)");
             _btnApplyBezierSmooth3D.Click += (s, e) => ApplyBezierSmoothFromSketch();
 
             _btnApplyBend3D = CreateRibbonButton(_panelActionBar, new Rectangle(978, 6, 106, 28), IconType.Bezier, "Uốn Khối 3D", ButtonVariant.Default,
-                "Lấy 2 nét 2D trong bộ đệm (Nét #1 Reference → Nét #2 Target) để Uốn biến dạng mô hình 3D (Mục 4.7)");
+                "Hỗ trợ 1 nét (Auto-Spine Bend) hoặc 2 nét (Reference → Target) để uốn khối (TV2-10). Giữ Shift khi bấm để Xoắn 3D (Twist)!");
             _btnApplyBend3D.Click += (s, e) => ApplyBend3DFromSketch();
 
             _btnToolMove3D = CreateRibbonButton(_panelActionBar, new Rectangle(1088, 6, 120, 28), IconType.Arrows, "Di Chuyển 3D", ButtonVariant.Default,
@@ -471,42 +477,54 @@ namespace PaintLike.Teddy
             Label lblPresets = new Label
             {
                 AutoSize = true,
-                Location = new Point(12, 10),
+                Location = new Point(10, 10),
                 Font = UITheme.FontGroupHeader,
                 ForeColor = UITheme.AccentPrimary,
-                Text = "MẪU BÀI BÁO:"
+                Text = "MẪU:"
             };
             _panelAlgoStepBar.Controls.Add(lblPresets);
 
-            CreatePresetButton(new Rectangle(100, 5, 86, 25), "Gấu Teddy", "TeddySilhouette", Color.FromArgb(244, 162, 97),
+            CreatePresetButton(new Rectangle(52, 5, 82, 25), "Gấu Teddy", "TeddySilhouette", Color.FromArgb(244, 162, 97),
                 "Triển khai hình vẽ 2D Gấu Teddy (Hình 1 & 2 bài báo). Bấm [Tạo Khối 3D] để thổi phồng thành mô hình 3D!");
-            CreatePresetButton(new Rectangle(190, 5, 92, 25), "Quả Cherry", "Cherry", Color.FromArgb(239, 68, 68),
+            CreatePresetButton(new Rectangle(137, 5, 84, 25), "Quả Cherry", "Cherry", Color.FromArgb(239, 68, 68),
                 "Triển khai hình vẽ 2D Quả Cherry (Hình 5c). Bấm [Tạo Khối 3D] để dựng thành mô hình 3D!");
-            CreatePresetButton(new Rectangle(286, 5, 82, 25), "Con Rắn", "Snake", Color.FromArgb(34, 197, 94),
+            CreatePresetButton(new Rectangle(224, 5, 76, 25), "Con Rắn", "Snake", Color.FromArgb(34, 197, 94),
                 "Triển khai hình vẽ 2D Con Rắn (Hình 5a). Bấm [Tạo Khối 3D] để dựng thành mô hình 3D!");
 
             Label lblSteps = new Label
             {
                 AutoSize = true,
-                Location = new Point(382, 10),
+                Location = new Point(308, 10),
                 Font = UITheme.FontGroupHeader,
                 ForeColor = UITheme.TextSecondary,
-                Text = "MINH HỌA THUẬT TOÁN (HÌNH 13–15):"
+                Text = "BƯỚC THUẬT TOÁN:"
             };
             _panelAlgoStepBar.Controls.Add(lblSteps);
 
-            AddStepViewButton(new Rectangle(596, 5, 96, 25), "0. Khối 3D", TeddyAlgorithmStepView.Final3DModel,
-                "Hiển thị mô hình 3D hoàn chỉnh sau khi khâu lưới và làm mịn");
-            AddStepViewButton(new Rectangle(696, 5, 100, 25), "1. Đa giác 13a", TeddyAlgorithmStepView.Step1_InitialPolygon2D,
-                "Hình 13a: Đa giác phẳng 2D với các cạnh biên có độ dài đều nhau");
-            AddStepViewButton(new Rectangle(800, 5, 106, 25), "2. CDT T/S/J 13b", TeddyAlgorithmStepView.Step2_CDT_T_S_J,
-                "Hình 13b: Lưới CDT & Phân loại tam giác Terminal (T), Sleeve (S), Junction (J)");
-            AddStepViewButton(new Rectangle(910, 5, 100, 25), "3. Trục Thô 13c", TeddyAlgorithmStepView.Step3_RawChordalAxis,
-                "Hình 13c: Trục Chordal Axis thô trước khi cắt tỉa nhánh phụ");
-            AddStepViewButton(new Rectangle(1014, 5, 98, 25), "4. Spine 13e-f", TeddyAlgorithmStepView.Step4_PruningAndSpine,
-                "Hình 13e-f & Hình 14: Cắt tỉa nửa đường tròn (Pruning) và rút trích trục Spine");
-            AddStepViewButton(new Rectangle(1116, 5, 94, 25), "5. Oval 3D 15c", TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D,
-                "Hình 15b-c: Nâng cao độ Z cho trục Spine và tạo các cung 1/4 elip (Xoay bằng Chuột Phải!)");
+            AddStepViewButton(new Rectangle(426, 5, 80, 25), "0. Khối 3D", TeddyAlgorithmStepView.Final3DModel,
+                "Hiển thị mô hình 3D hoàn chỉnh sau khi khâu lưới và làm mịn (Phím 0)");
+            AddStepViewButton(new Rectangle(509, 5, 84, 25), "1. Đa giác", TeddyAlgorithmStepView.Step1_InitialPolygon2D,
+                "Hình 13a: Đa giác phẳng 2D với các cạnh biên có độ dài đều nhau (Phím 1)");
+            AddStepViewButton(new Rectangle(596, 5, 74, 25), "2. CDT", TeddyAlgorithmStepView.Step2_CDT_T_S_J,
+                "Hình 13b: Lưới CDT & Phân loại tam giác Terminal (T), Sleeve (S), Junction (J) (Phím 2)");
+            AddStepViewButton(new Rectangle(673, 5, 82, 25), "3. Trục thô", TeddyAlgorithmStepView.Step3_RawChordalAxis,
+                "Hình 13c: Trục Chordal Axis thô trước khi cắt tỉa nhánh phụ (Phím 3)");
+            AddStepViewButton(new Rectangle(758, 5, 76, 25), "4. Spine", TeddyAlgorithmStepView.Step4_PruningAndSpine,
+                "Hình 13e-f & Hình 14: Cắt tỉa nửa đường tròn (Pruning) và rút trích trục Spine (Phím 4)");
+            AddStepViewButton(new Rectangle(837, 5, 82, 25), "5. Oval 3D", TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D,
+                "Hình 15b-c: Nâng cao độ Z cho Spine & cung 1/4 elip sin/cos (Phím 5)");
+            AddStepViewButton(new Rectangle(922, 5, 92, 25), "6. Đùn 17-18", TeddyAlgorithmStepView.Step6_ExtrusionTwoPointer3D,
+                "Hình 17–19: Mặt phẳng chiếu Ring-Normal, quét 2 con trỏ L↔R & lát cắt RMF (Phím 6)");
+            AddStepViewButton(new Rectangle(1017, 5, 92, 25), "7. Bezier 21", TeddyAlgorithmStepView.Step7_BezierHoleSmoothing3D,
+                "Hình 10 & 21: Xóa lỗ, lưới Steiner-CDT & vòm Cubic Bezier khớp tiếp tuyến (Phím 7)");
+
+            Button btnRemesh = CreateRibbonButton(_panelAlgoStepBar, new Rectangle(1114, 5, 82, 25), IconType.Filter, "Tái lưới", ButtonVariant.Default,
+                "Tái chia lưới đẳng hướng bảo toàn đa tạp 4 pha (Split / Link-Collapse / Valence Flip / Taubin - TV1-09)");
+            btnRemesh.Click += (s, e) => ApplyIsotropicRemeshOnActiveMesh();
+
+            Button btnBenchmark = CreateRibbonButton(_panelAlgoStepBar, new Rectangle(1199, 5, 72, 25), IconType.Star, "Đo [B]", ButtonVariant.Default,
+                "Bật/tắt Thẻ Benchmark Hình học 3D & Kiểm định Euler V-E+F=2 (Phím B - TV3-09)");
+            btnBenchmark.Click += (s, e) => ToggleBenchmarkOverlay();
 
             SetAlgorithmStepView(TeddyAlgorithmStepView.Final3DModel);
 
@@ -554,13 +572,16 @@ namespace PaintLike.Teddy
             {
                 Dock = DockStyle.Right,
                 AutoSize = false,
-                Width = 280,
+                Width = 340,
                 TextAlign = ContentAlignment.MiddleRight,
                 Padding = new Padding(0, 0, 12, 0),
                 Font = UITheme.FontMono,
                 ForeColor = UITheme.TextSecondary,
+                Cursor = Cursors.Hand,
                 Text = "Nét 2D: 0 | Khối 3D: 0"
             };
+            _lblMeshStats.Click += (s, e) => ToggleBenchmarkOverlay();
+            _toolTip.SetToolTip(_lblMeshStats, "Bấm (hoặc nhấn phím B) để bật/tắt Thẻ Benchmark Hình học & Kiểm định Euler V-E+F=2");
             _panelStatusBar.Controls.Add(_lblMeshStats);
 
             // =========================================================================
@@ -1040,6 +1061,7 @@ namespace PaintLike.Teddy
                 return;
             }
 
+            var sw = Stopwatch.StartNew();
             PushUndoState();
             int createdCount = 0;
             int failedCount = 0;
@@ -1105,6 +1127,9 @@ namespace PaintLike.Teddy
 
             if (createdCount > 0)
             {
+                sw.Stop();
+                _lastAlgoExecutionMs = sw.Elapsed.TotalMilliseconds;
+                _lastAlgoName = "Inflate 3D";
                 foreach (var c in consumed) ConsumeSketchStroke(c);
                 if (_selectedMesh != null)
                 {
@@ -1115,8 +1140,8 @@ namespace PaintLike.Teddy
                 SyncCameraPivotToActiveShape();
                 UpdateDeleteButtonState();
                 string summary = createdCount == 1
-                    ? $"Đã dựng 1 khối 3D thành công: {lastMsg}"
-                    : $"Đã dựng đồng loạt {createdCount} khối 3D độc lập thành công!";
+                    ? $"Đã dựng 1 khối 3D thành công ({_lastAlgoExecutionMs:F1} ms): {lastMsg}"
+                    : $"Đã dựng đồng loạt {createdCount} khối 3D độc lập thành công ({_lastAlgoExecutionMs:F1} ms)!";
                 if (failedCount > 0)
                     summary += $" (Bỏ qua {failedCount} nét 2D không hợp lệ: {lastFailMsg})";
                 UpdateStatus(summary);
@@ -1238,20 +1263,21 @@ namespace PaintLike.Teddy
                 return;
             }
 
+            var sw = Stopwatch.StartNew();
             PushUndoState();
-            if (TeddySurfacePaintOp.TryPaintOrDepthEraseOnSurface(
-                targetMesh,
-                sketch.Points,
-                _camera,
-                _viewportPanel.ClientSize,
-                _surfacePaintColor,
-                2.8f,
-                out _,
-                out string paintMsg))
+            bool createCrease = Control.ModifierKeys.HasFlag(Keys.Shift);
+            bool ok = createCrease
+                ? TeddySmoothBendOp.TryApplyCreaseStroke(targetMesh, sketch.Points, _camera, _viewportPanel.ClientSize, _surfacePaintColor, out string paintMsg)
+                : TeddySurfacePaintOp.TryPaintOrDepthEraseOnSurface(targetMesh, sketch.Points, _camera, _viewportPanel.ClientSize, _surfacePaintColor, 2.8f, out _, out paintMsg);
+
+            if (ok)
             {
+                sw.Stop();
+                _lastAlgoExecutionMs = sw.Elapsed.TotalMilliseconds;
+                _lastAlgoName = createCrease ? "Crease 3D" : "Surface Paint";
                 ConsumeSketchStroke(sketch);
                 UpdateDeleteButtonState();
-                UpdateStatus(paintMsg);
+                UpdateStatus($"{paintMsg} ({_lastAlgoExecutionMs:F1} ms)");
                 _viewportPanel.Invalidate();
             }
             else
@@ -1369,6 +1395,8 @@ namespace PaintLike.Teddy
             }
 
             TeddyMesh? ringMesh = _sceneMeshes.FirstOrDefault(m => m.ActiveBaseRing != null);
+            bool sewToParent = !Control.ModifierKeys.HasFlag(Keys.Shift);
+            var sw = Stopwatch.StartNew();
 
             // Tiện lợi thông minh: Nếu chưa đặt Vòng Đế nhưng có đúng 2 nét 2D -> Nét #1 làm Vòng Đế, Nét #2 làm nét Đùn
             if (ringMesh == null && _sketchLayer.Strokes.Count >= 2)
@@ -1385,17 +1413,24 @@ namespace PaintLike.Teddy
                         TeddySurfacePaintOp.SetExtrusionBaseRing(candidate, pts);
                         if (TeddyExtrudeCutOp.TryExtrudeOrDigFromBaseRing(
                             candidate, profileSketch.Points, _camera, _viewportPanel.ClientSize,
-                            out TeddyMesh? extMesh, out string extMsg))
+                            out TeddyMesh? extMesh, out string extMsg, sewToParent))
                         {
+                            sw.Stop();
+                            _lastAlgoExecutionMs = sw.Elapsed.TotalMilliseconds;
+                            _lastAlgoName = "Extrude / Cavity";
                             if (extMesh != null)
                             {
                                 _sceneMeshes.Add(extMesh);
                                 _selectedMesh = extMesh;
                             }
+                            else
+                            {
+                                _selectedMesh = candidate;
+                            }
                             ConsumeSketchStroke(ringSketch);
                             ConsumeSketchStroke(profileSketch);
                             UpdateDeleteButtonState();
-                            UpdateStatus(extMsg);
+                            UpdateStatus($"{extMsg} ({_lastAlgoExecutionMs:F1} ms)");
                             _viewportPanel.Invalidate();
                             return;
                         }
@@ -1429,16 +1464,24 @@ namespace PaintLike.Teddy
                 _camera,
                 _viewportPanel.ClientSize,
                 out TeddyMesh? extrudedMesh,
-                out string msg))
+                out string msg,
+                sewToParent))
             {
+                sw.Stop();
+                _lastAlgoExecutionMs = sw.Elapsed.TotalMilliseconds;
+                _lastAlgoName = "Extrude / Cavity";
                 if (extrudedMesh != null)
                 {
                     _sceneMeshes.Add(extrudedMesh);
                     _selectedMesh = extrudedMesh;
                 }
+                else
+                {
+                    _selectedMesh = ringMesh;
+                }
                 ConsumeSketchStroke(extrudeSketch);
                 UpdateDeleteButtonState();
-                UpdateStatus(msg);
+                UpdateStatus($"{msg} ({_lastAlgoExecutionMs:F1} ms)");
                 _viewportPanel.Invalidate();
             }
             else
@@ -1503,6 +1546,7 @@ namespace PaintLike.Teddy
 
             if (candidates.Count == 0) return;
 
+            var sw = Stopwatch.StartNew();
             PushUndoState();
             int successCount = 0;
             string lastMsg = "";
@@ -1535,6 +1579,9 @@ namespace PaintLike.Teddy
 
             if (successCount > 0)
             {
+                sw.Stop();
+                _lastAlgoExecutionMs = sw.Elapsed.TotalMilliseconds;
+                _lastAlgoName = "Cut / Bite 3D";
                 if (splitAdditions.Count > 0)
                 {
                     _sceneMeshes.AddRange(splitAdditions);
@@ -1547,7 +1594,7 @@ namespace PaintLike.Teddy
                 _selectedSurfaceLine = null;
                 SyncCameraPivotToActiveShape();
                 UpdateDeleteButtonState();
-                UpdateStatus(lastMsg);
+                UpdateStatus($"{lastMsg} ({_lastAlgoExecutionMs:F1} ms)");
                 _viewportPanel.Invalidate();
             }
             else
@@ -1594,32 +1641,44 @@ namespace PaintLike.Teddy
 
             if (ringMesh != null && ringMesh.ActiveBaseRing != null)
             {
+                var sw = Stopwatch.StartNew();
                 if (TeddySmoothBendOp.TrySmoothRegionInBaseRing(ringMesh, out string smoothMsg))
                 {
+                    sw.Stop();
+                    _lastAlgoExecutionMs = sw.Elapsed.TotalMilliseconds;
+                    _lastAlgoName = "Bezier Smooth";
                     if (consumedSketch != null) ConsumeSketchStroke(consumedSketch);
+                    _selectedMesh = ringMesh;
                     UpdateDeleteButtonState();
-                    UpdateStatus(smoothMsg);
+                    UpdateStatus($"{smoothMsg} ({_lastAlgoExecutionMs:F1} ms)");
                     _viewportPanel.Invalidate();
                     return;
                 }
             }
 
             // Fallback: Làm mịn Taubin toàn khối nếu không khoanh vùng cụ thể
+            var swFb = Stopwatch.StartNew();
             if (_selectedMesh != null)
             {
                 _selectedMesh.SmoothMesh(2, 0.42f, -0.44f);
-                UpdateStatus("Đã làm mịn bề mặt khối 3D đang chọn (Taubin Fairing).");
+                swFb.Stop();
+                _lastAlgoExecutionMs = swFb.Elapsed.TotalMilliseconds;
+                _lastAlgoName = "Taubin Fairing";
+                UpdateStatus($"Đã làm mịn bề mặt khối 3D đang chọn (Taubin Fairing - {_lastAlgoExecutionMs:F1} ms).");
             }
             else
             {
                 foreach (var m in _sceneMeshes) m.SmoothMesh(2, 0.42f, -0.44f);
-                UpdateStatus("Đã làm mịn bề mặt toàn bộ các khối 3D (Taubin Fairing).");
+                swFb.Stop();
+                _lastAlgoExecutionMs = swFb.Elapsed.TotalMilliseconds;
+                _lastAlgoName = "Taubin Fairing";
+                UpdateStatus($"Đã làm mịn bề mặt toàn bộ các khối 3D (Taubin Fairing - {_lastAlgoExecutionMs:F1} ms).");
             }
             _viewportPanel.Invalidate();
         }
 
         /// <summary>
-        /// Nút 8: [Uốn Khối 3D] — Mục 4.7 (Lấy 2 nét 2D: Reference & Target trong lớp phác thảo để uốn biến dạng khối).
+        /// Nút 8: [Uốn Khối 3D] — TV2-10 & Mục 4.7/8 (1 nét Auto-Spine Bend, 2 nét Reference → Target, hoặc Shift+Click để Xoắn 3D).
         /// </summary>
         private void ApplyBend3DFromSketch()
         {
@@ -1630,29 +1689,59 @@ namespace PaintLike.Teddy
             }
 
             var bendStrokes = _sketchLayer.Strokes.Where(s => s.CutPattern == TeddyCutPattern.Freehand).ToList();
-            if (bendStrokes.Count < 2)
+            if (bendStrokes.Count == 0)
             {
-                UpdateStatus("Cần vẽ đủ 2 nét 2D lên bộ đệm để Uốn: Nét #1 (Trục chuẩn Reference dọc thân khối) và Nét #2 (Trục đích Target muốn uốn tới)!");
+                UpdateStatus("Hãy vẽ 1 nét 2D mới (Auto-Spine Bend) hoặc 2 nét 2D (Reference → Target) trước khi bấm [Uốn Khối 3D]!");
                 return;
             }
 
-            var refSketch = bendStrokes[bendStrokes.Count - 2];
-            var targetSketch = bendStrokes[bendStrokes.Count - 1];
-            TeddyMesh? targetMesh = PickTargetMeshForStroke(refSketch.Points) ?? CurrentMesh;
+            bool isTwistMode = Control.ModifierKeys.HasFlag(Keys.Shift);
+            var targetStroke = bendStrokes[bendStrokes.Count - 1];
+            TeddyMesh? targetMesh = PickTargetMeshForStroke(targetStroke.Points) ?? CurrentMesh;
 
+            var sw = Stopwatch.StartNew();
             PushUndoState();
-            if (TeddySmoothBendOp.TryBendMeshWithStrokes(
+
+            if (isTwistMode)
+            {
+                if (TeddySmoothBendOp.TryTwistMeshAlongStroke(
+                    targetMesh,
+                    targetStroke.Points,
+                    _camera,
+                    _viewportPanel.ClientSize,
+                    MathF.PI * 0.65f,
+                    out string twistMsg))
+                {
+                    sw.Stop();
+                    _lastAlgoExecutionMs = sw.Elapsed.TotalMilliseconds;
+                    _lastAlgoName = "Twist 3D";
+                    ConsumeSketchStroke(targetStroke);
+                    UpdateDeleteButtonState();
+                    UpdateStatus($"{twistMsg} ({_lastAlgoExecutionMs:F1} ms)");
+                    _viewportPanel.Invalidate();
+                }
+                else
+                {
+                    RestoreFromUndoWithoutRedo();
+                    UpdateStatus(twistMsg);
+                }
+                return;
+            }
+
+            if (TeddySmoothBendOp.TryAutoSpineOrTwoStrokeBend(
                 targetMesh,
-                refSketch.Points,
-                targetSketch.Points,
+                bendStrokes,
                 _camera,
                 _viewportPanel.ClientSize,
+                out List<SketchStroke2D> consumed,
                 out string bendMsg))
             {
-                ConsumeSketchStroke(refSketch);
-                ConsumeSketchStroke(targetSketch);
+                sw.Stop();
+                _lastAlgoExecutionMs = sw.Elapsed.TotalMilliseconds;
+                _lastAlgoName = bendStrokes.Count == 1 ? "Auto-Spine Bend" : "Bend 3D";
+                foreach (var c in consumed) ConsumeSketchStroke(c);
                 UpdateDeleteButtonState();
-                UpdateStatus(bendMsg);
+                UpdateStatus($"{bendMsg} ({_lastAlgoExecutionMs:F1} ms)");
                 _viewportPanel.Invalidate();
             }
             else
@@ -1709,7 +1798,10 @@ namespace PaintLike.Teddy
                     _camera,
                     _algorithmStepView);
 
-                if (_show3DAxes && _algorithmStepView == TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D)
+                if (_show3DAxes &&
+                    (_algorithmStepView == TeddyAlgorithmStepView.Step5_QuarterOvalRibs3D ||
+                     _algorithmStepView == TeddyAlgorithmStepView.Step6_ExtrusionTwoPointer3D ||
+                     _algorithmStepView == TeddyAlgorithmStepView.Step7_BezierHoleSmoothing3D))
                 {
                     GetActiveShapeAxesAnchor(out Vector3 stepOrigin, out float stepRadius, out var stepBounds, out Quaternion stepRot, ActiveMesh);
                     TeddyRenderer.DrawWorldCoordinateAxes3D(e.Graphics, _viewportPanel.ClientSize, _camera, isOverlayOnMesh: false, stepOrigin, stepRadius, stepBounds, TeddyAxisDragHandle.None, stepRot);
@@ -1741,6 +1833,14 @@ namespace PaintLike.Teddy
                 }
                 else
                 {
+                    // [TV3-07] Dựng Software Z-Buffer toàn cảnh để khử nét Silhouette & nét bề mặt bị che khuất giữa nhiều khối/nhánh
+                    var sharedZBuf = TeddyRenderer.BuildSceneDepthBuffer(
+                        _viewportPanel.ClientSize,
+                        visibleMeshes,
+                        _camera,
+                        _cutPieceVisibility,
+                        _cutSurfaceViewMode);
+
                     bool isFirst = true;
                     foreach (var mesh in visibleMeshes)
                     {
@@ -1755,7 +1855,8 @@ namespace PaintLike.Teddy
                             drawBackground: isFirst,
                             cutPieceVisibility: _cutPieceVisibility,
                             cutSurfaceViewMode: _cutSurfaceViewMode,
-                            cutFillColor: _cutFillColor);
+                            cutFillColor: _cutFillColor,
+                            sharedDepthBuffer: sharedZBuf);
                         isFirst = false;
                     }
 
@@ -1819,6 +1920,19 @@ namespace PaintLike.Teddy
                 _cutAmplitudePx,
                 _cutPeriodCount,
                 _flipCutRemoveSide);
+
+            // [TV3-09] Hiển thị thẻ Benchmark Hình học 3D & Euler V-E+F=2 nếu người dùng đang bật [Phím B]
+            if (_showBenchmarkOverlay)
+            {
+                TeddyMesh? benchMesh = _selectedMesh ?? (_sceneMeshes.Count > 0 ? _sceneMeshes[_sceneMeshes.Count - 1] : null);
+                TeddyRenderer.DrawBenchmarkOverlayCard(
+                    e.Graphics,
+                    _viewportPanel.ClientSize,
+                    benchMesh,
+                    _sceneMeshes.Count,
+                    _lastAlgoExecutionMs,
+                    _lastAlgoName);
+            }
         }
 
         // =========================================================================
@@ -1873,7 +1987,7 @@ namespace PaintLike.Teddy
         {
             if (step != TeddyAlgorithmStepView.Final3DModel && (CurrentMesh.IsEmpty || CurrentMesh.DebugInfo == null))
             {
-                UpdateStatus("Hãy bấm [Tạo Khối 3D] hoặc chọn Mẫu Bài Báo ('Gấu Teddy', 'Quả Cherry', 'Con Rắn') để xem từng bước thuật toán Hình 13–15!");
+                UpdateStatus("Chưa có dữ liệu minh họa cho khối đang chọn! Hãy bấm [Tạo Khối 3D] (hoặc [Đùn] / [Mượt Bezier 3D]) trước.");
                 return;
             }
 
@@ -1883,6 +1997,39 @@ namespace PaintLike.Teddy
                 UITheme.SetButtonSelected(kvp.Value, kvp.Key == step);
             }
             _viewportPanel?.Invalidate();
+        }
+
+        private void ApplyIsotropicRemeshOnActiveMesh()
+        {
+            TeddyMesh? target = _selectedMesh ?? (_sceneMeshes.Count > 0 ? _sceneMeshes[_sceneMeshes.Count - 1] : null);
+            if (target == null || target.IsEmpty)
+            {
+                UpdateStatus("Chưa có khối 3D nào để Tái chia lưới đẳng hướng (Remesh - TV1-09)!");
+                return;
+            }
+
+            var sw = Stopwatch.StartNew();
+            PushUndoState();
+            int ops = TeddyMeshOptimizer.IsotropicManifoldRemesh(target, targetEdgeLength: 0f, iterations: 1);
+            sw.Stop();
+
+            _lastAlgoExecutionMs = sw.Elapsed.TotalMilliseconds;
+            _lastAlgoName = "Isotropic Remesh";
+            var rep = target.ValidateManifoldAndEuler();
+            target.ComputeTriangleAngleStats(out float minAng, out float avgMinAng);
+
+            RefreshStatsLabel();
+            UpdateStatus($"[TV1-09 Remesh ({_lastAlgoExecutionMs:F1} ms)] {ops} thao tác Split/Collapse/Flip | Euler χ={rep.EulerCharacteristic} ({(rep.IsClosedWatertightManifold ? "Đa tạp kín" : $"Hở {rep.BoundaryEdgeCount}")}) | Góc min {minAng:F1}° (TB {avgMinAng:F1}°).");
+            _viewportPanel.Invalidate();
+        }
+
+        private void ToggleBenchmarkOverlay()
+        {
+            _showBenchmarkOverlay = !_showBenchmarkOverlay;
+            UpdateStatus(_showBenchmarkOverlay
+                ? "Đang HIỆN Thẻ Benchmark Hình học 3D (Euler V-E+F=2, Góc min, Thời gian chạy). Nhấn [B] để ẩn."
+                : "Đã ẨN Thẻ Benchmark Hình học 3D. Nhấn [B] hoặc click góc phải thanh trạng thái để bật lại.");
+            _viewportPanel.Invalidate();
         }
 
         private void SetRenderStyle(TeddyRenderStyle style)
@@ -2476,7 +2623,8 @@ namespace PaintLike.Teddy
         {
             int totalVerts = _sceneMeshes.Sum(m => m.Vertices.Count);
             int totalFaces = _sceneMeshes.Sum(m => m.Triangles.Count);
-            _lblMeshStats.Text = $"Nét 2D: {_sketchLayer.Strokes.Count} | Khối: {_sceneMeshes.Count} | Mặt: {totalFaces} ({totalVerts}đ)";
+            string timePart = _lastAlgoExecutionMs > 0.01 ? $" | {_lastAlgoExecutionMs:F0}ms" : "";
+            _lblMeshStats.Text = $"2D:{_sketchLayer.Strokes.Count} | Khối:{_sceneMeshes.Count} | Mặt:{totalFaces} ({totalVerts}đ){timePart} [B]";
         }
 
         private StudioHistoryState CaptureHistoryState()
@@ -2568,6 +2716,11 @@ namespace PaintLike.Teddy
                 ToggleMove3DMode();
                 return true;
             }
+            if (keyData == Keys.B)
+            {
+                ToggleBenchmarkOverlay();
+                return true;
+            }
             if (keyData == Keys.Space)
             {
                 ResetActiveRotationAndCamera();
@@ -2595,7 +2748,7 @@ namespace PaintLike.Teddy
                 _viewportPanel.Invalidate();
                 return true;
             }
-            if (keyData >= Keys.D0 && keyData <= Keys.D5)
+            if (keyData >= Keys.D0 && keyData <= Keys.D7)
             {
                 int stepIdx = keyData - Keys.D0;
                 SetAlgorithmStepView((TeddyAlgorithmStepView)stepIdx);
@@ -3029,7 +3182,8 @@ namespace PaintLike.Teddy
                 try
                 {
                     ObjExporter.SaveToFile(_sceneMeshes, sfd.FileName);
-                    UpdateStatus($"Đã xuất file .OBJ thành công ({_sceneMeshes.Count(m => !m.IsEmpty)} vật thể): {sfd.FileName}");
+                    string mtlName = System.IO.Path.GetFileName(System.IO.Path.ChangeExtension(sfd.FileName, ".mtl"));
+                    UpdateStatus($"Đã xuất đa màu .OBJ + .MTL ({_sceneMeshes.Count(m => !m.IsEmpty)} vật thể): {System.IO.Path.GetFileName(sfd.FileName)} & {mtlName}");
                 }
                 catch (Exception ex)
                 {

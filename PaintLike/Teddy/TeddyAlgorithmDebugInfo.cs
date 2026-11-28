@@ -15,7 +15,9 @@ namespace PaintLike.Teddy
         Step2_CDT_T_S_J = 2,        // Hình 13b: Lưới Constrained Delaunay & Phân loại tam giác T / S / J
         Step3_RawChordalAxis = 3,   // Hình 13c: Trục Chordal Axis thô trước khi cắt tỉa nhánh phụ
         Step4_PruningAndSpine = 4,  // Hình 13d-f & 14: Cắt tỉa nửa đường tròn, tạo quạt Fan & Spine chính
-        Step5_QuarterOvalRibs3D = 5 // Hình 15a-c: Nâng cao độ Z cho Spine & các cung sườn Quarter-Oval 3D
+        Step5_QuarterOvalRibs3D = 5, // Hình 15a-c: Nâng cao độ Z cho Spine & các cung sườn Quarter-Oval 3D
+        Step6_ExtrusionTwoPointer3D = 6, // Hình 17-18: Mặt phẳng chiếu tối ưu, quét 2 con trỏ & lát cắt RMF
+        Step7_BezierHoleSmoothing3D = 7  // Hình 21: Xóa lỗ, lưới Steiner-CDT & vòm Cubic Bezier đa mặt phẳng
     }
 
     /// <summary>
@@ -53,6 +55,17 @@ namespace PaintLike.Teddy
         public List<(Vector3 A, Vector3 B)> ElevatedSpineTop3D { get; set; } = new List<(Vector3 A, Vector3 B)>();
         public List<(Vector3 A, Vector3 B)> ElevatedSpineBottom3D { get; set; } = new List<(Vector3 A, Vector3 B)>();
 
+        // [TV3-08 / Hình 17-18] Dữ liệu minh họa Đùn khối (Extrusion Two-Pointer Sweep & RMF)
+        public List<Vector3> ExtrudeBaseRing3D { get; set; } = new List<Vector3>();
+        public List<Vector3> ExtrudeStroke3D { get; set; } = new List<Vector3>();
+        public List<(Vector3 LeftPt, Vector3 RightPt)> ExtrudePointerRungs3D { get; set; } = new List<(Vector3 LeftPt, Vector3 RightPt)>();
+        public List<Vector3[]> ExtrudeSweepRings3D { get; set; } = new List<Vector3[]>();
+
+        // [TV3-08 / Hình 21] Dữ liệu minh họa Làm mượt Bezier (Hole-Deleting Steiner-CDT + Cubic Bezier)
+        public List<Vector3> SmoothHoleBoundary3D { get; set; } = new List<Vector3>();
+        public List<(Vector3 A, Vector3 B, Vector3 C)> SmoothSteinerTriangles3D { get; set; } = new List<(Vector3 A, Vector3 B, Vector3 C)>();
+        public List<Vector3[]> SmoothBezierArches3D { get; set; } = new List<Vector3[]>();
+
         public TeddyAlgorithmDebugInfo Clone()
         {
             var copy = new TeddyAlgorithmDebugInfo
@@ -66,10 +79,23 @@ namespace PaintLike.Teddy
                 PrunedSpineEdges2D = new List<(Vector2 A, Vector2 B)>(this.PrunedSpineEdges2D),
                 PrunedSpineNodes2D = new List<Vector2>(this.PrunedSpineNodes2D),
                 SubdividedMesh2D = new List<(Vector2 A, Vector2 B, Vector2 C)>(this.SubdividedMesh2D),
-                QuarterOvalRibs3D = new List<Vector3[]>(this.QuarterOvalRibs3D),
                 ElevatedSpineTop3D = new List<(Vector3 A, Vector3 B)>(this.ElevatedSpineTop3D),
-                ElevatedSpineBottom3D = new List<(Vector3 A, Vector3 B)>(this.ElevatedSpineBottom3D)
+                ElevatedSpineBottom3D = new List<(Vector3 A, Vector3 B)>(this.ElevatedSpineBottom3D),
+                ExtrudeBaseRing3D = new List<Vector3>(this.ExtrudeBaseRing3D),
+                ExtrudeStroke3D = new List<Vector3>(this.ExtrudeStroke3D),
+                ExtrudePointerRungs3D = new List<(Vector3 LeftPt, Vector3 RightPt)>(this.ExtrudePointerRungs3D),
+                SmoothHoleBoundary3D = new List<Vector3>(this.SmoothHoleBoundary3D),
+                SmoothSteinerTriangles3D = new List<(Vector3 A, Vector3 B, Vector3 C)>(this.SmoothSteinerTriangles3D)
             };
+
+            foreach (var rib in this.QuarterOvalRibs3D)
+                copy.QuarterOvalRibs3D.Add((Vector3[])rib.Clone());
+
+            foreach (var ring in this.ExtrudeSweepRings3D)
+                copy.ExtrudeSweepRings3D.Add((Vector3[])ring.Clone());
+
+            foreach (var arch in this.SmoothBezierArches3D)
+                copy.SmoothBezierArches3D.Add((Vector3[])arch.Clone());
 
             foreach (var t in this.CdtTriangles)
             {

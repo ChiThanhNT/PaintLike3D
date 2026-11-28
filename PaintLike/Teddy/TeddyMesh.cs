@@ -450,7 +450,161 @@ namespace PaintLike.Teddy
                     var seg = DebugInfo.ElevatedSpineBottom3D[i];
                     DebugInfo.ElevatedSpineBottom3D[i] = (transformPoint(seg.A), transformPoint(seg.B));
                 }
+
+                for (int i = 0; i < DebugInfo.ExtrudeBaseRing3D.Count; i++)
+                    DebugInfo.ExtrudeBaseRing3D[i] = transformPoint(DebugInfo.ExtrudeBaseRing3D[i]);
+
+                for (int i = 0; i < DebugInfo.ExtrudeStroke3D.Count; i++)
+                    DebugInfo.ExtrudeStroke3D[i] = transformPoint(DebugInfo.ExtrudeStroke3D[i]);
+
+                for (int i = 0; i < DebugInfo.ExtrudePointerRungs3D.Count; i++)
+                {
+                    var rung = DebugInfo.ExtrudePointerRungs3D[i];
+                    DebugInfo.ExtrudePointerRungs3D[i] = (transformPoint(rung.LeftPt), transformPoint(rung.RightPt));
+                }
+
+                foreach (var ring in DebugInfo.ExtrudeSweepRings3D)
+                {
+                    for (int i = 0; i < ring.Length; i++)
+                        ring[i] = transformPoint(ring[i]);
+                }
+
+                for (int i = 0; i < DebugInfo.SmoothHoleBoundary3D.Count; i++)
+                    DebugInfo.SmoothHoleBoundary3D[i] = transformPoint(DebugInfo.SmoothHoleBoundary3D[i]);
+
+                for (int i = 0; i < DebugInfo.SmoothSteinerTriangles3D.Count; i++)
+                {
+                    var st = DebugInfo.SmoothSteinerTriangles3D[i];
+                    DebugInfo.SmoothSteinerTriangles3D[i] = (transformPoint(st.A), transformPoint(st.B), transformPoint(st.C));
+                }
+
+                foreach (var arch in DebugInfo.SmoothBezierArches3D)
+                {
+                    for (int i = 0; i < arch.Length; i++)
+                        arch[i] = transformPoint(arch[i]);
+                }
             }
+        }
+
+        /// <summary>
+        /// [TV1-09] Báo cáo kiểm định cấu trúc đa tạp kín (Watertight Manifold) và đặc trưng Euler-Poincaré χ = V - E + F.
+        /// </summary>
+        public struct ManifoldValidationReport
+        {
+            public int VertexCount;
+            public int EdgeCount;
+            public int FaceCount;
+            public int BoundaryEdgeCount;
+            public int NonManifoldEdgeCount;
+            public int EulerCharacteristic;
+            public bool IsClosedWatertightManifold;
+        }
+
+        /// <summary>
+        /// [TV1-09] Kiểm định tính đa tạp kín và công thức Euler-Poincaré (V - E + F = 2 cho lưới cầu đơn thông kín).
+        /// </summary>
+        public ManifoldValidationReport ValidateManifoldAndEuler()
+        {
+            var usedVerts = new HashSet<int>();
+            var edgeFaceCount = new Dictionary<(int, int), int>();
+            int validFaces = 0;
+
+            foreach (var tri in Triangles)
+            {
+                if (tri.V0 < 0 || tri.V0 >= Vertices.Count ||
+                    tri.V1 < 0 || tri.V1 >= Vertices.Count ||
+                    tri.V2 < 0 || tri.V2 >= Vertices.Count ||
+                    tri.V0 == tri.V1 || tri.V1 == tri.V2 || tri.V2 == tri.V0)
+                    continue;
+
+                validFaces++;
+                usedVerts.Add(tri.V0);
+                usedVerts.Add(tri.V1);
+                usedVerts.Add(tri.V2);
+
+                int[] v = { tri.V0, tri.V1, tri.V2 };
+                for (int e = 0; e < 3; e++)
+                {
+                    int a = v[e];
+                    int b = v[(e + 1) % 3];
+                    var key = a < b ? (a, b) : (b, a);
+                    edgeFaceCount[key] = edgeFaceCount.TryGetValue(key, out int c) ? c + 1 : 1;
+                }
+            }
+
+            int boundary = 0;
+            int nonManifold = 0;
+            foreach (var kv in edgeFaceCount)
+            {
+                if (kv.Value == 1) boundary++;
+                else if (kv.Value > 2) nonManifold++;
+            }
+
+            int vCount = usedVerts.Count;
+            int eCount = edgeFaceCount.Count;
+            return new ManifoldValidationReport
+            {
+                VertexCount = vCount,
+                EdgeCount = eCount,
+                FaceCount = validFaces,
+                BoundaryEdgeCount = boundary,
+                NonManifoldEdgeCount = nonManifold,
+                EulerCharacteristic = vCount - eCount + validFaces,
+                IsClosedWatertightManifold = validFaces >= 4 && boundary == 0 && nonManifold == 0
+            };
+        }
+
+        /// <summary>
+        /// [TV1-09 / TV3-09] Tính thống kê góc tam giác 3D (góc nhỏ nhất toàn lưới & trung bình góc nhỏ nhất từng tam giác).
+        /// </summary>
+        public void ComputeTriangleAngleStats(out float minAngleDegrees, out float avgMinAngleDegrees)
+        {
+            minAngleDegrees = 180f;
+            avgMinAngleDegrees = 0f;
+            int count = 0;
+            float sumMin = 0f;
+
+            foreach (var tri in Triangles)
+            {
+                if (tri.V0 < 0 || tri.V0 >= Vertices.Count ||
+                    tri.V1 < 0 || tri.V1 >= Vertices.Count ||
+                    tri.V2 < 0 || tri.V2 >= Vertices.Count)
+                    continue;
+
+                Vector3 p0 = Vertices[tri.V0];
+                Vector3 p1 = Vertices[tri.V1];
+                Vector3 p2 = Vertices[tri.V2];
+
+                float a0 = TriAngleDeg(p0, p1, p2);
+                float a1 = TriAngleDeg(p1, p2, p0);
+                float a2 = TriAngleDeg(p2, p0, p1);
+                float triMin = MathF.Min(a0, MathF.Min(a1, a2));
+
+                if (triMin < minAngleDegrees) minAngleDegrees = triMin;
+                sumMin += triMin;
+                count++;
+            }
+
+            if (count == 0)
+            {
+                minAngleDegrees = 0f;
+                avgMinAngleDegrees = 0f;
+            }
+            else
+            {
+                avgMinAngleDegrees = sumMin / count;
+            }
+        }
+
+        private static float TriAngleDeg(Vector3 v, Vector3 a, Vector3 b)
+        {
+            Vector3 da = a - v;
+            Vector3 db = b - v;
+            float la = da.Length();
+            float lb = db.Length();
+            if (la < 1e-6f || lb < 1e-6f) return 0f;
+            float cos = Math.Clamp(Vector3.Dot(da, db) / (la * lb), -1f, 1f);
+            return MathF.Acos(cos) * (180f / MathF.PI);
         }
 
         // =========================================================================

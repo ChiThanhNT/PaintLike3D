@@ -363,17 +363,23 @@ namespace PaintLike.Teddy
     }
 
     /// <summary>
-    /// [TV2-03 & TV2-04] Thực hiện các phép Đùn khối (Extrusion - Mục 4.4 & 5.3),
-    /// Khoét lõm (Digging a Cavity - Hình 7a-c), Cắt khối (Cutting - Mục 4.5 & 5.4)
+    /// [TV2-03, TV2-04, TV2-07 & TV2-08] Thực hiện các phép Đùn khối (Extrusion - Mục 4.4 & 5.3 theo mặt phẳng Ring-Normal,
+    /// khung RMF chống xoắn Hình 19 & tùy chọn Khâu liền khối Barequet–Sharir [1]),
+    /// Khoét lõm (Digging a Cavity - Hình 7a-c), Cắt khối (Bounded Biting Cut Hình 8 & Nắp lưới Steiner-CDT Hình 20)
     /// và Đùn tiếp từ mặt cắt (Extrusion after Cutting - Hình 9).
     /// </summary>
     public static class TeddyExtrudeCutOp
     {
         /// <summary>
-        /// [Mục 5.3 - Hình 17 & 18] Thực hiện phép Đùn khối (Extrusion) hoặc Khoét lõm (Cavity)
-        /// từ vòng chọn màu đỏ (ActiveBaseRing) dọc theo nét vẽ đùn 2D bằng thuật toán quét 2 con trỏ (Two-Pointer Sweep).
-        /// Khi Đùn khối (Extrusion), hàm tạo ra một khối 3D mới độc lập (TeddyMesh riêng) không đục thủng khối cũ,
-        /// cho phép chọn riêng và xóa riêng khối đùn thêm này mà khối cũ vẫn nguyên vẹn 100%.
+        /// Khi true (mặc định chuẩn bài báo Teddy): Đùn lồi sẽ mở miệng tại Vòng Đế Đỏ và khâu liền khối (Manifold Sewing)
+        /// trực tiếp vào khối gốc, cho phép dùng [Mượt Bezier 3D] xóa ngấn chân đùn (Hình 10b).
+        /// </summary>
+        public static bool DefaultSewExtrusionToParent { get; set; } = true;
+
+        /// <summary>
+        /// [TV2-07 & Mục 5.3 - Hình 17, 18, 19] Thực hiện phép Đùn khối (Extrusion) hoặc Khoét lõm (Cavity)
+        /// từ vòng chọn màu đỏ (ActiveBaseRing) dọc theo nét vẽ đùn 2D bằng mặt phẳng chiếu tối ưu chứa ringNormal,
+        /// thuật toán quét 2 con trỏ (Two-Pointer Sweep) và khung vận chuyển song song RMF chống xoắn.
         /// </summary>
         public static bool TryExtrudeOrDigFromBaseRing(
             TeddyMesh mesh,
@@ -381,7 +387,8 @@ namespace PaintLike.Teddy
             VirtualTrackballCamera camera,
             Size viewport,
             out TeddyMesh? extrudedMesh,
-            out string statusMessage)
+            out string statusMessage,
+            bool? sewToParentOverride = null)
         {
             extrudedMesh = null;
             statusMessage = "";
@@ -418,8 +425,16 @@ namespace PaintLike.Teddy
 
             Vector3 ringNormal = DetermineOutwardRingNormal(mesh, baseRing, ringCenter);
 
-            // Bước 2: Tìm mặt phẳng chiếu (Projection Plane - Hình 17a)
-            // Mặt phẳng đi qua ringCenter, song song với ringNormal và hướng về phía Camera nhiều nhất
+            // Bước 2: [TV2-07] Dựng Mặt Phẳng Chiếu Tối Ưu Π_ext đi qua ringCenter, song song với ringNormal
+            // và hướng về phía Camera nhiều nhất (Mục 5.3 - Hình 17a): b = n_ring x v_cam, n_plane = b x n_ring
+            Vector3 camForward = camera.GetCameraForwardInWorld();
+            Vector3 planeBasisB = Vector3.Cross(ringNormal, camForward);
+            Vector3 planeNormal = planeBasisB.LengthSquared() > 1e-6f
+                ? Vector3.Normalize(Vector3.Cross(planeBasisB, ringNormal))
+                : camForward;
+            if (Vector3.Dot(planeNormal, camForward) < 0f)
+                planeNormal = -planeNormal;
+
             Vector3 viewCenter = camera.ProjectToScreen(ringCenter, viewport);
             List<PointF> uniform2D = StrokeProcessor.ResampleUniform(rawExtrudeStroke, 10f, false);
             if (uniform2D.Count < 4)
@@ -429,29 +444,44 @@ namespace PaintLike.Teddy
             }
 
             var stroke3D = new List<Vector3>(uniform2D.Count);
+            float maxDepthOffset = MathF.Max(180f, ringRadius * 5.0f);
             foreach (PointF pt in uniform2D)
             {
+                var (rayOrig, rayDir) = camera.ScreenPointToRay(pt, viewport);
+                float denom = Vector3.Dot(rayDir, planeNormal);
+                if (MathF.Abs(denom) > 0.14f)
+                {
+                    float tHit = Vector3.Dot(ringCenter - rayOrig, planeNormal) / denom;
+                    Vector3 hitPt = rayOrig + rayDir * tHit;
+                    if (Vector3.Distance(hitPt, ringCenter) <= maxDepthOffset)
+                    {
+                        stroke3D.Add(hitPt);
+                        continue;
+                    }
+                }
                 stroke3D.Add(camera.ScreenToWorldPoint(pt, viewport, viewCenter.Z));
             }
 
-            // Đảm bảo hai đầu của nét đùn bám sát mặt phẳng của Base Ring
+            // Đảm bảo hai đầu của nét đùn xác định trục cơ sở vuông góc ringNormal
             Vector3 strokeChord = stroke3D[stroke3D.Count - 1] - stroke3D[0];
             float baseChordWidth = strokeChord.Length();
             if (baseChordWidth < 6f) baseChordWidth = ringRadius * 2f;
 
-            Vector3 uAxis = Vector3.Normalize(strokeChord - Vector3.Dot(strokeChord, ringNormal) * ringNormal);
+            Vector3 uAxis = strokeChord - Vector3.Dot(strokeChord, ringNormal) * ringNormal;
             if (uAxis.LengthSquared() < 1e-4f)
             {
-                uAxis = Vector3.Normalize(baseRing[0] - ringCenter);
+                uAxis = baseRing[0] - ringCenter;
+                uAxis -= Vector3.Dot(uAxis, ringNormal) * ringNormal;
             }
+            uAxis = uAxis.LengthSquared() > 1e-6f ? Vector3.Normalize(uAxis) : Vector3.UnitX;
             Vector3 vAxis = Vector3.Normalize(Vector3.Cross(ringNormal, uAxis));
 
             // Đảm bảo baseRing có thứ tự ngược chiều kim đồng hồ quanh ringNormal để pháp tuyến mặt đùn hướng ra ngoài
             EnsureRingOrientation(baseRing, ringCenter, uAxis, vAxis);
 
             // Bước 3: Thuật toán quét 2 con trỏ (Two-Pointer Advancing - Mục 5.3, Hình 18a)
-            // Một con trỏ chạy từ đầu trái (0) lên đỉnh, một con trỏ chạy từ đầu phải (M-1) lên đỉnh
-            var sweepSlices = BuildTwoPointerSweepSlices(stroke3D, ringCenter, baseChordWidth);
+            var debugRungs = new List<(Vector3 LeftPt, Vector3 RightPt)>();
+            var sweepSlices = BuildTwoPointerSweepSlices(stroke3D, ringCenter, baseChordWidth, debugRungs);
             if (sweepSlices.Count == 0)
             {
                 statusMessage = "Không thể tạo mặt quét từ nét vẽ này.";
@@ -470,13 +500,184 @@ namespace PaintLike.Teddy
                 localRingOffsets[i] = new Vector2(Vector3.Dot(rel, uAxis), Vector3.Dot(rel, vAxis));
             }
 
+            // Hàm bổ trợ tính các vòng thiết diện theo khung Rotation-Minimizing Frame (RMF) chống xoắn Hình 19
+            List<Vector3[]> BuildRmfSweepRingPoints(Vector3 startTangent)
+            {
+                var ringPointsList = new List<Vector3[]>(sweepSlices.Count);
+                Vector3 prevCenter = ringCenter;
+                Vector3 prevTangent = startTangent;
+                Vector3 frameU = uAxis;
+                Vector3 frameV = vAxis;
+
+                for (int s = 0; s < sweepSlices.Count; s++)
+                {
+                    var slice = sweepSlices[s];
+                    Vector3 stepVec = slice.Center - prevCenter;
+                    Vector3 currTangent = stepVec.LengthSquared() > 1e-3f
+                        ? Vector3.Normalize(stepVec)
+                        : prevTangent;
+
+                    // Vận chuyển song song (Parallel Transport / RMF) từ prevTangent sang currTangent
+                    Vector3 rotAxis = Vector3.Cross(prevTangent, currTangent);
+                    float rotAxisLen = rotAxis.Length();
+                    if (rotAxisLen > 1e-5f)
+                    {
+                        rotAxis /= rotAxisLen;
+                        float dotTan = Math.Clamp(Vector3.Dot(prevTangent, currTangent), -1f, 1f);
+                        float rotAngle = MathF.Acos(dotTan);
+                        Quaternion transport = Quaternion.CreateFromAxisAngle(rotAxis, rotAngle);
+                        frameU = Vector3.Normalize(Vector3.Transform(frameU, transport));
+                    }
+                    // Trực giao hóa lại frameU & frameV quanh currTangent
+                    frameU -= Vector3.Dot(frameU, currTangent) * currTangent;
+                    frameU = frameU.LengthSquared() > 1e-6f ? Vector3.Normalize(frameU) : uAxis;
+                    frameV = Vector3.Normalize(Vector3.Cross(currTangent, frameU));
+
+                    // Gióng theo hướng dây cung 2 con trỏ nhưng chống lật 180° nhờ RMF frameU
+                    Vector3 candU = slice.ChordDir - Vector3.Dot(slice.ChordDir, currTangent) * currTangent;
+                    Vector3 sliceU = frameU;
+                    if (candU.LengthSquared() > 1e-4f)
+                    {
+                        candU = Vector3.Normalize(candU);
+                        if (Vector3.Dot(candU, frameU) < 0f)
+                            candU = -candU;
+                        sliceU = Vector3.Normalize(candU * 0.72f + frameU * 0.28f);
+                    }
+                    Vector3 sliceV = Vector3.Normalize(Vector3.Cross(currTangent, sliceU));
+                    if (Vector3.Dot(sliceV, frameV) < 0f) sliceV = -sliceV;
+                    sliceU = Vector3.Normalize(Vector3.Cross(sliceV, currTangent));
+
+                    float scaleU = Math.Clamp(slice.Scale, 0.08f, 3.2f);
+                    float scaleV = Math.Clamp(MathF.Pow(scaleU, 0.78f), 0.08f, 2.5f);
+
+                    var pts3D = new Vector3[nRing];
+                    for (int i = 0; i < nRing; i++)
+                    {
+                        Vector2 loc = localRingOffsets[i];
+                        pts3D[i] = slice.Center + sliceU * (loc.X * scaleU) + sliceV * (loc.Y * scaleV);
+                    }
+                    ringPointsList.Add(pts3D);
+
+                    frameU = sliceU;
+                    frameV = sliceV;
+                    prevTangent = currTangent;
+                    prevCenter = slice.Center;
+                }
+
+                return ringPointsList;
+            }
+
+            void PopulateExtrudeDebugInfo(TeddyMesh targetMesh, List<Vector3[]> ringPointsList, Vector3 endTangent)
+            {
+                if (targetMesh.DebugInfo == null)
+                    targetMesh.DebugInfo = new TeddyAlgorithmDebugInfo();
+
+                targetMesh.DebugInfo.ExtrudeBaseRing3D = new List<Vector3>(baseRing);
+                targetMesh.DebugInfo.ExtrudeStroke3D = new List<Vector3>(stroke3D);
+                targetMesh.DebugInfo.ExtrudePointerRungs3D = new List<(Vector3 LeftPt, Vector3 RightPt)>(debugRungs);
+                targetMesh.DebugInfo.ExtrudeSweepRings3D = new List<Vector3[]>(ringPointsList.Count + 1)
+                {
+                    baseRing.ToArray()
+                };
+                foreach (var r in ringPointsList)
+                    targetMesh.DebugInfo.ExtrudeSweepRings3D.Add((Vector3[])r.Clone());
+                _ = endTangent;
+            }
+
             if (!isCavity)
             {
-                // =========================================================================
-                // ĐÙN KHỐI LỒI (EXTRUSION): Tạo một TeddyMesh độc lập riêng biệt!
-                // Giữ nguyên 100% khối cơ sở (không đục thủng, không hàn gộp),
-                // cho phép click chọn riêng và xóa riêng khối đùn này.
-                // =========================================================================
+                bool sewToParent = sewToParentOverride ?? DefaultSewExtrusionToParent;
+                var sweepRingPts = BuildRmfSweepRingPoints(ringNormal);
+                Vector3 endTan = sweepSlices.Count >= 2
+                    ? Vector3.Normalize(sweepSlices[sweepSlices.Count - 1].Center - sweepSlices[sweepSlices.Count - 2].Center)
+                    : ringNormal;
+
+                if (sewToParent)
+                {
+                    // =========================================================================
+                    // [TV2-07] KHÂU LIỀN KHỐI (MANIFOLD SEWN EXTRUSION - Barequet & Sharir [1]):
+                    // Mở miệng trên mesh gốc bên trong Vòng Đế Đỏ và khâu trực tiếp lưới đùn vào thân gốc,
+                    // tạo một khối đa tạp kín duy nhất cho phép dùng [Mượt Bezier 3D] xóa ngấn chân đùn (Hình 10b)!
+                    // =========================================================================
+                    var originalTris = new List<TeddyTriangle>(mesh.Triangles.Count);
+                    foreach (var t in mesh.Triangles) originalTris.Add(t.Clone());
+                    int origVertCount = mesh.Vertices.Count;
+
+                    RemoveTrianglesInsideBaseRing(mesh, baseRing, ringCenter, ringNormal, uAxis, vAxis, ringRadius, out List<int> holeBoundaryVerts);
+
+                    if (holeBoundaryVerts.Count >= 3)
+                    {
+                        extrudedMesh = null;
+                        var ringVertexIndices = new List<int[]>(sweepRingPts.Count + 1);
+
+                        int[] ring0 = new int[nRing];
+                        for (int i = 0; i < nRing; i++)
+                        {
+                            ring0[i] = mesh.Vertices.Count;
+                            mesh.Vertices.Add(baseRing[i]);
+                        }
+                        ringVertexIndices.Add(ring0);
+
+                        StitchHoleBoundaryToBaseRing(mesh, holeBoundaryVerts, ring0, ringCenter, ringNormal, uAxis, vAxis, outwardFacing: true);
+
+                        foreach (var rPts in sweepRingPts)
+                        {
+                            int[] ringK = new int[nRing];
+                            for (int i = 0; i < nRing; i++)
+                            {
+                                ringK[i] = mesh.Vertices.Count;
+                                mesh.Vertices.Add(rPts[i]);
+                            }
+                            ringVertexIndices.Add(ringK);
+                        }
+
+                        for (int r = 0; r < ringVertexIndices.Count - 1; r++)
+                        {
+                            int[] rA = ringVertexIndices[r];
+                            int[] rB = ringVertexIndices[r + 1];
+                            for (int i = 0; i < nRing; i++)
+                            {
+                                int next = (i + 1) % nRing;
+                                mesh.Triangles.Add(new TeddyTriangle(rA[i], rA[next], rB[next]));
+                                mesh.Triangles.Add(new TeddyTriangle(rA[i], rB[next], rB[i]));
+                            }
+                        }
+
+                        int[] lastRing = ringVertexIndices[ringVertexIndices.Count - 1];
+                        Vector3 apexCenter = Vector3.Zero;
+                        for (int i = 0; i < nRing; i++) apexCenter += mesh.Vertices[lastRing[i]];
+                        apexCenter /= nRing;
+                        apexCenter += endTan * (ringRadius * 0.12f);
+
+                        int apexIdx = mesh.Vertices.Count;
+                        mesh.Vertices.Add(apexCenter);
+                        for (int i = 0; i < nRing; i++)
+                        {
+                            int next = (i + 1) % nRing;
+                            mesh.Triangles.Add(new TeddyTriangle(lastRing[i], lastRing[next], apexIdx));
+                        }
+
+                        // Giữ Vòng Đế Đỏ để người dùng có thể bấm ngay [Mượt Bezier 3D] xóa ngấn Hình 10b (hoặc tự vẽ lại nếu muốn)
+                        mesh.ActiveBaseRing = null;
+                        CompactMeshVertices(mesh);
+                        mesh.BuildConnectivity();
+                        mesh.RecalculateNormals();
+                        PopulateExtrudeDebugInfo(mesh, sweepRingPts, endTan);
+
+                        statusMessage = $"Đã đùn lồi liền khối RMF (TV2-07 Manifold Sewing - Hình 17–19) gồm {sweepSlices.Count} lát cắt! (Giữ Shift khi bấm để đùn khối rời)";
+                        return true;
+                    }
+                    else
+                    {
+                        // Khôi phục lại lưới gốc nếu vòng đế quá nhỏ không mở được lỗ và chuyển sang tạo khối độc lập
+                        mesh.Triangles.Clear();
+                        mesh.Triangles.AddRange(originalTris);
+                        if (mesh.Vertices.Count > origVertCount)
+                            mesh.Vertices.RemoveRange(origVertCount, mesh.Vertices.Count - origVertCount);
+                    }
+                }
+
+                // Chế độ Đùn khối độc lập (khi giữ Shift hoặc vòng quá nhỏ): tạo solid 3D kín riêng biệt
                 extrudedMesh = new TeddyMesh
                 {
                     BaseColor = mesh.BaseColor,
@@ -484,172 +685,110 @@ namespace PaintLike.Teddy
                     LocalRotation = mesh.LocalRotation
                 };
 
-                var ringVertexIndices = new List<int[]>();
-
-                // Vòng 0: Khớp sát bề mặt mô hình
-                int[] ring0 = new int[nRing];
+                var detRingIndices = new List<int[]>(sweepRingPts.Count + 1);
+                int[] detRing0 = new int[nRing];
                 for (int i = 0; i < nRing; i++)
                 {
-                    // Lùi nhẹ 0.4 đơn vị vào khối cơ sở để hai khối tiếp xúc khít, không để hở khe
                     Vector3 rootPt = baseRing[i] - ringNormal * 0.4f;
-                    ring0[i] = extrudedMesh.Vertices.Count;
+                    detRing0[i] = extrudedMesh.Vertices.Count;
                     extrudedMesh.Vertices.Add(rootPt);
                 }
-                ringVertexIndices.Add(ring0);
+                detRingIndices.Add(detRing0);
 
-                // Nắp đáy (Bottom Cap) tại Vòng 0 để khối mới là một solid 3D kín hoàn chỉnh (watertight solid)
                 Vector3 baseCenter = ringCenter - ringNormal * 0.4f;
                 int baseCenterIdx = extrudedMesh.Vertices.Count;
                 extrudedMesh.Vertices.Add(baseCenter);
                 for (int i = 0; i < nRing; i++)
                 {
                     int next = (i + 1) % nRing;
-                    extrudedMesh.Triangles.Add(new TeddyTriangle(ring0[next], ring0[i], baseCenterIdx));
+                    extrudedMesh.Triangles.Add(new TeddyTriangle(detRing0[next], detRing0[i], baseCenterIdx));
                 }
 
-                // Sinh các vòng tiếp theo từ danh sách lát cắt 2 con trỏ
-                Vector3 prevCenter = ringCenter;
-                Vector3 currTangent = ringNormal;
-
-                for (int s = 0; s < sweepSlices.Count; s++)
+                foreach (var rPts in sweepRingPts)
                 {
-                    var slice = sweepSlices[s];
-                    Vector3 stepVec = slice.Center - prevCenter;
-                    if (stepVec.LengthSquared() > 1e-3f)
-                    {
-                        currTangent = Vector3.Normalize(stepVec);
-                    }
-
-                    // Khung tọa độ cục bộ vuông góc với hướng đùn
-                    Vector3 sliceU = slice.ChordDir;
-                    Vector3 sliceV = Vector3.Normalize(Vector3.Cross(currTangent, sliceU));
-                    if (Vector3.Dot(sliceV, vAxis) < 0f) sliceV = -sliceV;
-                    sliceU = Vector3.Normalize(Vector3.Cross(sliceV, currTangent));
-
-                    float scaleU = Math.Clamp(slice.Scale, 0.08f, 3.2f);
-                    float scaleV = Math.Clamp(MathF.Pow(scaleU, 0.78f), 0.08f, 2.5f);
-
                     int[] ringK = new int[nRing];
                     for (int i = 0; i < nRing; i++)
                     {
-                        Vector2 loc = localRingOffsets[i];
-                        Vector3 pt3D = slice.Center + sliceU * (loc.X * scaleU) + sliceV * (loc.Y * scaleV);
                         ringK[i] = extrudedMesh.Vertices.Count;
-                        extrudedMesh.Vertices.Add(pt3D);
+                        extrudedMesh.Vertices.Add(rPts[i]);
                     }
-
-                    ringVertexIndices.Add(ringK);
-                    prevCenter = slice.Center;
+                    detRingIndices.Add(ringK);
                 }
 
-                // Khâu các vòng thiết diện liên tiếp nhau thành mặt lưới
-                for (int r = 0; r < ringVertexIndices.Count - 1; r++)
+                for (int r = 0; r < detRingIndices.Count - 1; r++)
                 {
-                    int[] rA = ringVertexIndices[r];
-                    int[] rB = ringVertexIndices[r + 1];
-
+                    int[] rA = detRingIndices[r];
+                    int[] rB = detRingIndices[r + 1];
                     for (int i = 0; i < nRing; i++)
                     {
                         int next = (i + 1) % nRing;
-                        int a0 = rA[i];
-                        int a1 = rA[next];
-                        int b0 = rB[i];
-                        int b1 = rB[next];
-
-                        extrudedMesh.Triangles.Add(new TeddyTriangle(a0, a1, b1));
-                        extrudedMesh.Triangles.Add(new TeddyTriangle(a0, b1, b0));
+                        extrudedMesh.Triangles.Add(new TeddyTriangle(rA[i], rA[next], rB[next]));
+                        extrudedMesh.Triangles.Add(new TeddyTriangle(rA[i], rB[next], rB[i]));
                     }
                 }
 
-                // Đóng nắp chóp (Apex cap) ở đỉnh cuối của nét đùn
-                int[] lastRing = ringVertexIndices[ringVertexIndices.Count - 1];
-                Vector3 apexCenter = Vector3.Zero;
-                for (int i = 0; i < nRing; i++) apexCenter += extrudedMesh.Vertices[lastRing[i]];
-                apexCenter /= nRing;
-                apexCenter += currTangent * (ringRadius * 0.12f);
+                int[] detLastRing = detRingIndices[detRingIndices.Count - 1];
+                Vector3 detApex = Vector3.Zero;
+                for (int i = 0; i < nRing; i++) detApex += extrudedMesh.Vertices[detLastRing[i]];
+                detApex /= nRing;
+                detApex += endTan * (ringRadius * 0.12f);
 
-                int apexIdx = extrudedMesh.Vertices.Count;
-                extrudedMesh.Vertices.Add(apexCenter);
-
+                int detApexIdx = extrudedMesh.Vertices.Count;
+                extrudedMesh.Vertices.Add(detApex);
                 for (int i = 0; i < nRing; i++)
                 {
                     int next = (i + 1) % nRing;
-                    extrudedMesh.Triangles.Add(new TeddyTriangle(lastRing[i], lastRing[next], apexIdx));
+                    extrudedMesh.Triangles.Add(new TeddyTriangle(detLastRing[i], detLastRing[next], detApexIdx));
                 }
 
                 mesh.ActiveBaseRing = null;
                 extrudedMesh.BuildConnectivity();
                 extrudedMesh.RecalculateNormals();
+                PopulateExtrudeDebugInfo(extrudedMesh, sweepRingPts, endTan);
+                PopulateExtrudeDebugInfo(mesh, sweepRingPts, endTan);
 
-                statusMessage = $"Đã đùn thành khối 3D mới độc lập (Extrusion - Hình 6 & 18) gồm {sweepSlices.Count} lát cắt.";
+                statusMessage = $"Đã đùn thành khối 3D mới độc lập theo mặt phẳng Ring-Normal & RMF (Hình 17–19) gồm {sweepSlices.Count} lát cắt.";
                 return true;
             }
             else
             {
                 // =========================================================================
-                // KHOÉT LÕM (CAVITY): Biến dạng trực tiếp vào lòng khối cơ sở
+                // KHOÉT LÕM (CAVITY): Biến dạng trực tiếp vào lòng khối cơ sở bằng RMF
                 // =========================================================================
                 extrudedMesh = null;
+                var sweepRingPts = BuildRmfSweepRingPoints(-ringNormal);
+                Vector3 endTan = sweepSlices.Count >= 2
+                    ? Vector3.Normalize(sweepSlices[sweepSlices.Count - 1].Center - sweepSlices[sweepSlices.Count - 2].Center)
+                    : -ringNormal;
 
-                // Bước 4: Xóa các tam giác cũ nằm bên trong vòng chọn Base Ring trên bề mặt mô hình
                 RemoveTrianglesInsideBaseRing(mesh, baseRing, ringCenter, ringNormal, uAxis, vAxis, ringRadius, out List<int> holeBoundaryVerts);
 
-                // Bước 5: Tạo các vòng thiết diện 3D dọc theo đường quét và khâu lưới (Hình 18b)
-                var ringVertexIndices = new List<int[]>();
-
-                // Vòng 0: Khớp trực tiếp lên bề mặt tại vị trí Base Ring
+                var ringVertexIndices = new List<int[]>(sweepRingPts.Count + 1);
                 int[] ring0 = new int[nRing];
                 for (int i = 0; i < nRing; i++)
                 {
-                    // Hạ nhẹ chân vòng 0 xuống 1.2 đơn vị để hàn kín vào thân mô hình
-                    Vector3 rootPt = baseRing[i] - ringNormal * 1.2f;
+                    Vector3 rootPt = baseRing[i] - ringNormal * 0.8f;
                     ring0[i] = mesh.Vertices.Count;
                     mesh.Vertices.Add(rootPt);
                 }
                 ringVertexIndices.Add(ring0);
 
-                // Nếu có biên lỗ thủng từ các tam giác vừa xóa, khâu kín biên lỗ thủng vào Vòng 0
                 if (holeBoundaryVerts.Count >= 3)
                 {
-                    StitchHoleBoundaryToBaseRing(mesh, holeBoundaryVerts, ring0, ringCenter, uAxis, vAxis);
+                    StitchHoleBoundaryToBaseRing(mesh, holeBoundaryVerts, ring0, ringCenter, ringNormal, uAxis, vAxis, outwardFacing: true);
                 }
 
-                // Sinh các vòng tiếp theo từ danh sách lát cắt 2 con trỏ
-                Vector3 prevCenter = ringCenter;
-                Vector3 currTangent = -ringNormal;
-
-                for (int s = 0; s < sweepSlices.Count; s++)
+                foreach (var rPts in sweepRingPts)
                 {
-                    var slice = sweepSlices[s];
-                    Vector3 stepVec = slice.Center - prevCenter;
-                    if (stepVec.LengthSquared() > 1e-3f)
-                    {
-                        currTangent = Vector3.Normalize(stepVec);
-                    }
-
-                    // Khung tọa độ cục bộ vuông góc với hướng đùn (Mục 5.3: "almost perpendicular to the direction of the extrusion")
-                    Vector3 sliceU = slice.ChordDir;
-                    Vector3 sliceV = Vector3.Normalize(Vector3.Cross(currTangent, sliceU));
-                    if (Vector3.Dot(sliceV, vAxis) < 0f) sliceV = -sliceV;
-                    sliceU = Vector3.Normalize(Vector3.Cross(sliceV, currTangent));
-
-                    float scaleU = Math.Clamp(slice.Scale, 0.08f, 3.2f);
-                    float scaleV = Math.Clamp(MathF.Pow(scaleU, 0.78f), 0.08f, 2.5f);
-
                     int[] ringK = new int[nRing];
                     for (int i = 0; i < nRing; i++)
                     {
-                        Vector2 loc = localRingOffsets[i];
-                        Vector3 pt3D = slice.Center + sliceU * (loc.X * scaleU) + sliceV * (loc.Y * scaleV);
                         ringK[i] = mesh.Vertices.Count;
-                        mesh.Vertices.Add(pt3D);
+                        mesh.Vertices.Add(rPts[i]);
                     }
-
                     ringVertexIndices.Add(ringK);
-                    prevCenter = slice.Center;
                 }
 
-                // Khâu các vòng thiết diện liên tiếp nhau thành mặt lưới (Hình 18b)
                 for (int r = 0; r < ringVertexIndices.Count - 1; r++)
                 {
                     int[] rA = ringVertexIndices[r];
@@ -669,12 +808,11 @@ namespace PaintLike.Teddy
                     }
                 }
 
-                // Đóng nắp chóp (Apex cap) ở đáy hốc lõm
                 int[] lastRing = ringVertexIndices[ringVertexIndices.Count - 1];
                 Vector3 apexCenter = Vector3.Zero;
                 for (int i = 0; i < nRing; i++) apexCenter += mesh.Vertices[lastRing[i]];
                 apexCenter /= nRing;
-                apexCenter += currTangent * (ringRadius * 0.12f);
+                apexCenter += endTan * (ringRadius * 0.12f);
 
                 int apexIdx = mesh.Vertices.Count;
                 mesh.Vertices.Add(apexCenter);
@@ -686,10 +824,12 @@ namespace PaintLike.Teddy
                 }
 
                 mesh.ActiveBaseRing = null;
+                CompactMeshVertices(mesh);
                 mesh.BuildConnectivity();
                 mesh.RecalculateNormals();
+                PopulateExtrudeDebugInfo(mesh, sweepRingPts, endTan);
 
-                statusMessage = $"Đã khoét hốc lõm 3D (Digging a Cavity - Hình 7a-c) gồm {sweepSlices.Count} lát cắt.";
+                statusMessage = $"Đã khoét hốc lõm 3D theo khung RMF (Digging a Cavity - Hình 7 & 18b) gồm {sweepSlices.Count} lát cắt.";
                 return true;
             }
         }
@@ -746,17 +886,26 @@ namespace PaintLike.Teddy
             TeddyMesh rightClone = mesh.Clone();
             TeddyMesh leftClone = mesh.Clone();
 
-            // Cắt lấy phần thân chính (d >= 0)
-            if (!SliceSingleMeshByDirectedPolyline(rightClone, patternedPoly, camera, viewport, markRedRing: true, out _))
+            // [TV2-08] Tự động nhận diện Cắt Xuyên Toàn Khối hay Cắn Khuyết Cục Bộ (Bounded Biting - Hình 8)
+            bool isBoundedBite = DetectBoundedBitingCut(mesh, patternedPoly, camera, viewport, out float biteMinU, out float biteMaxU, out float biteMaxOutwardDepth, out Vector2 biteChordDir, out Vector2 biteLeftNorm);
+
+            // Cắt lấy phần thân chính (d >= 0; nếu là Biting thì vùng ngoài phạm vi cắn thuộc thân chính)
+            if (!SliceSingleMeshByDirectedPolyline(rightClone, patternedPoly, camera, viewport, markRedRing: true, out _,
+                isBoundedBite: isBoundedBite, keepExteriorIfBite: true,
+                biteMinU: biteMinU, biteMaxU: biteMaxU, biteMaxOutwardDepth: biteMaxOutwardDepth,
+                biteChordDir: biteChordDir, biteLeftNorm: biteLeftNorm))
             {
                 statusMessage = $"Đường cắt [{patternName}] chưa đi xuyên qua vật thể. Hãy kéo đường cắt cắt ngang qua khối 3D!";
                 return false;
             }
 
-            // Cắt và giữ lại phần bị cắt (d < 0) bằng cách đảo chiều polyline
+            // Cắt và giữ lại phần bị cắt (nếu là Biting thì vùng ngoài phạm vi cắn bị loại khỏi mảnh bị cắn)
             var reversedPoly = new List<PointF>(patternedPoly);
             reversedPoly.Reverse();
-            if (SliceSingleMeshByDirectedPolyline(leftClone, reversedPoly, camera, viewport, markRedRing: false, out _))
+            if (SliceSingleMeshByDirectedPolyline(leftClone, reversedPoly, camera, viewport, markRedRing: false, out _,
+                isBoundedBite: isBoundedBite, keepExteriorIfBite: false,
+                biteMinU: biteMinU, biteMaxU: biteMaxU, biteMaxOutwardDepth: biteMaxOutwardDepth,
+                biteChordDir: biteChordDir, biteLeftNorm: biteLeftNorm))
             {
                 leftClone.IsCutOffPiece = true;
 
@@ -779,7 +928,9 @@ namespace PaintLike.Teddy
 
             CopyMeshData(rightClone, mesh);
 
-            statusMessage = $"Đã cắt ngang hình khối theo mẫu [{patternName}]: Giữ lại phần bị cắt, hiển thị đường cắt nét đứt và tô sẫm màu phía trong hình khối!";
+            statusMessage = isBoundedBite
+                ? $"Đã cắn khuyết cục bộ [{patternName}] & đóng nắp Steiner-CDT (TV2-08 Hình 8 & 20) — giữ nguyên các nhánh khác!"
+                : $"Đã cắt ngang hình khối theo mẫu [{patternName}] & đóng nắp Steiner-CDT (TV2-08 Hình 20)!";
             return true;
         }
 
@@ -818,13 +969,90 @@ namespace PaintLike.Teddy
             return true;
         }
 
+        private static bool DetectBoundedBitingCut(
+            TeddyMesh mesh,
+            List<PointF> cutPolyScreen,
+            VirtualTrackballCamera camera,
+            Size viewport,
+            out float biteMinU,
+            out float biteMaxU,
+            out float biteMaxOutwardDepth,
+            out Vector2 biteChordDir,
+            out Vector2 biteLeftNorm)
+        {
+            biteMinU = biteMaxU = biteMaxOutwardDepth = 0f;
+            biteChordDir = Vector2.UnitX;
+            biteLeftNorm = -Vector2.UnitY;
+
+            if (mesh == null || mesh.Vertices.Count == 0 || cutPolyScreen == null || cutPolyScreen.Count < 3)
+                return false;
+
+            PointF p0 = cutPolyScreen[0];
+            PointF pN = cutPolyScreen[cutPolyScreen.Count - 1];
+            Vector2 chord = new Vector2(pN.X - p0.X, pN.Y - p0.Y);
+            float chordLen = chord.Length();
+            if (chordLen < 16f) return false;
+
+            biteChordDir = chord / chordLen;
+            biteLeftNorm = new Vector2(biteChordDir.Y, -biteChordDir.X);
+
+            float cMinU = float.MaxValue, cMaxU = float.MinValue;
+            float maxLeftArch = 0f;
+            foreach (var p in cutPolyScreen)
+            {
+                Vector2 rel = new Vector2(p.X - p0.X, p.Y - p0.Y);
+                float u = Vector2.Dot(rel, biteChordDir);
+                float vLeft = Vector2.Dot(rel, biteLeftNorm);
+                if (u < cMinU) cMinU = u;
+                if (u > cMaxU) cMaxU = u;
+                if (vLeft > maxLeftArch) maxLeftArch = vLeft;
+            }
+
+            float meshMinU = float.MaxValue, meshMaxU = float.MinValue;
+            float meshMinV = float.MaxValue, meshMaxV = float.MinValue;
+            foreach (var vert in mesh.Vertices)
+            {
+                Vector3 sp = camera.ProjectToScreen(vert, viewport);
+                Vector2 rel = new Vector2(sp.X - p0.X, sp.Y - p0.Y);
+                float u = Vector2.Dot(rel, biteChordDir);
+                float vLeft = Vector2.Dot(rel, biteLeftNorm);
+                if (u < meshMinU) meshMinU = u;
+                if (u > meshMaxU) meshMaxU = u;
+                if (vLeft < meshMinV) meshMinV = vLeft;
+                if (vLeft > meshMaxV) meshMaxV = vLeft;
+            }
+
+            float meshSpanU = meshMaxU - meshMinU;
+            float cutSpanU = cMaxU - cMinU;
+            bool startClearOutside = meshMinU > cMinU + 6f;
+            bool endClearOutside = meshMaxU < cMaxU - 6f;
+
+            // Nếu đường cắt không kéo xuyên qua hết 2 phía biên khối theo trục dây cung (dấu hiệu Cắn Khuyết Cục Bộ Hình 8)
+            bool partialSpan = (!startClearOutside || !endClearOutside) && cutSpanU < meshSpanU * 0.88f;
+            if (!partialSpan)
+                return false;
+
+            float padU = MathF.Max(14f, cutSpanU * 0.12f);
+            biteMinU = cMinU - padU;
+            biteMaxU = cMaxU + padU;
+            biteMaxOutwardDepth = MathF.Max(maxLeftArch + MathF.Max(48f, cutSpanU * 0.55f), MathF.Abs(meshMaxV) * 0.45f);
+            return true;
+        }
+
         private static bool SliceSingleMeshByDirectedPolyline(
             TeddyMesh mesh,
             List<PointF> cutPolyScreen,
             VirtualTrackballCamera camera,
             Size viewport,
             bool markRedRing,
-            out string statusMessage)
+            out string statusMessage,
+            bool isBoundedBite = false,
+            bool keepExteriorIfBite = true,
+            float biteMinU = 0f,
+            float biteMaxU = 0f,
+            float biteMaxOutwardDepth = 0f,
+            Vector2 biteChordDir = default,
+            Vector2 biteLeftNorm = default)
         {
             statusMessage = "";
             if (mesh == null || mesh.IsEmpty || cutPolyScreen == null || cutPolyScreen.Count < 2)
@@ -833,27 +1061,45 @@ namespace PaintLike.Teddy
                 return false;
             }
 
-            // Bước 1: Mở rộng hai đầu đường cắt ra xa ngoài vùng nhìn dọc theo hướng tổng thể
-            // và dựng đa giác nửa mặt phẳng bên Phải (Right Half-Plane Jordan Polygon) để xét dấu chính xác 100% ở mọi góc nhọn Zíc-zắc / Bậc thang
+            // Bước 1: Mở rộng hai đầu đường cắt (chỉ mở ngắn khi là Bounded Biting Cut Hình 8)
+            float localExt = isBoundedBite ? MathF.Max(34f, StrokeProcessor.Distance(cutPolyScreen[0], cutPolyScreen[cutPolyScreen.Count - 1]) * 0.25f) : 3200f;
             BuildExtendedPolylineAndRightHalfPolygon(
                 cutPolyScreen,
                 out List<PointF> extendedPoly,
-                out List<Vector2> rightHalfPolygon);
+                out List<Vector2> rightHalfPolygon,
+                localExt);
 
             // Bước 2: Chia mịn cục bộ (Adaptive Manifold Midpoint Subdivision) các tam giác nằm gần đường cắt
-            // giúp mặt cắt bám sát từng răng cưa Zíc-zắc, Bậc thang, Lượn sóng và Đường cong trên cả Khối Hộp / Khối Cầu thô
-            SubdivideMeshAlongCutBand(mesh, cutPolyScreen, extendedPoly, camera, viewport);
+            SubdivideMeshAlongCutBand(mesh, cutPolyScreen, isBoundedBite ? cutPolyScreen : extendedPoly, camera, viewport);
 
             // Bước 3: Tính khoảng cách có dấu (Signed Distance) của từng đỉnh 3D chiếu lên màn hình
             int origVertCount = mesh.Vertices.Count;
             float[] signedDist = new float[origVertCount];
             int leftCount = 0;
             int rightCount = 0;
+            PointF biteAnchor = keepExteriorIfBite ? cutPolyScreen[0] : cutPolyScreen[cutPolyScreen.Count - 1];
 
             for (int i = 0; i < origVertCount; i++)
             {
                 Vector3 sp = camera.ProjectToScreen(mesh.Vertices[i], viewport);
-                float d = ComputeSignedDistanceToExtendedPolyline(new PointF(sp.X, sp.Y), extendedPoly, rightHalfPolygon);
+                PointF s2 = new PointF(sp.X, sp.Y);
+                float d = ComputeSignedDistanceToExtendedPolyline(s2, extendedPoly, rightHalfPolygon);
+
+                if (isBoundedBite)
+                {
+                    Vector2 rel = new Vector2(s2.X - biteAnchor.X, s2.Y - biteAnchor.Y);
+                    float u = Vector2.Dot(rel, biteChordDir);
+                    float vLeft = Vector2.Dot(rel, biteLeftNorm);
+                    bool outsideBiteDomain = (u < biteMinU || u > biteMaxU || vLeft > biteMaxOutwardDepth);
+                    if (outsideBiteDomain)
+                    {
+                        float absD = MathF.Max(1.0f, MathF.Abs(d));
+                        // Điểm nằm ngoài vùng cắn cục bộ luôn thuộc phần thân chính:
+                        // giữ lại ở thân chính (d > 0) và loại bỏ ở mảnh cắn rời (d < 0)
+                        d = keepExteriorIfBite ? absD : -absD;
+                    }
+                }
+
                 // Khử suy biến khi đỉnh nằm đúng trên đường cắt (Simulation of Simplicity)
                 if (MathF.Abs(d) < 1e-3f) d = 1e-3f;
                 signedDist[i] = d;
@@ -1022,7 +1268,8 @@ namespace PaintLike.Teddy
         private static List<SweepSlice> BuildTwoPointerSweepSlices(
             List<Vector3> stroke,
             Vector3 ringCenter,
-            float baseWidth)
+            float baseWidth,
+            List<(Vector3 LeftPt, Vector3 RightPt)>? debugRungs = null)
         {
             var slices = new List<SweepSlice>();
             int m = stroke.Count;
@@ -1069,6 +1316,7 @@ namespace PaintLike.Teddy
                 float width = chord.Length();
                 if (width < 1e-3f) break;
 
+                debugRungs?.Add((pL, pR));
                 slices.Add(new SweepSlice
                 {
                     Center = 0.5f * (pL + pR),
@@ -1243,25 +1491,83 @@ namespace PaintLike.Teddy
             List<int> holeVerts,
             int[] ring0,
             Vector3 center,
+            Vector3 ringNormal,
             Vector3 uAxis,
-            Vector3 vAxis)
+            Vector3 vAxis,
+            bool outwardFacing)
         {
             int hCount = holeVerts.Count;
             int rCount = ring0.Length;
             if (hCount < 3 || rCount < 3) return;
 
-            for (int i = 0; i < hCount; i++)
+            float GetAngle(Vector3 p)
             {
-                int hCurr = holeVerts[i];
-                int hNext = holeVerts[(i + 1) % hCount];
+                Vector3 rel = p - center;
+                float ang = MathF.Atan2(Vector3.Dot(rel, vAxis), Vector3.Dot(rel, uAxis));
+                if (ang < 0f) ang += MathF.PI * 2f;
+                return ang;
+            }
 
-                int rCurr = ring0[(i * rCount / hCount) % rCount];
-                int rNext = ring0[((i + 1) * rCount / hCount) % rCount];
-
-                mesh.Triangles.Add(new TeddyTriangle(hCurr, hNext, rNext));
-                if (rCurr != rNext)
+            // Khớp điểm khởi đầu gần nhất trên ring0 với holeVerts[0] rồi hợp nhất theo góc cực (tránh vặn xoắn khe nối)
+            float hAng0 = GetAngle(mesh.Vertices[holeVerts[0]]);
+            int rOffset = 0;
+            float bestAngDiff = float.MaxValue;
+            for (int r = 0; r < rCount; r++)
+            {
+                float rAng = GetAngle(mesh.Vertices[ring0[r]]);
+                float diff = MathF.Abs(MathF.Atan2(MathF.Sin(rAng - hAng0), MathF.Cos(rAng - hAng0)));
+                if (diff < bestAngDiff)
                 {
-                    mesh.Triangles.Add(new TeddyTriangle(hCurr, rNext, rCurr));
+                    bestAngDiff = diff;
+                    rOffset = r;
+                }
+            }
+
+            Vector3 expectedNorm = outwardFacing ? ringNormal : -ringNormal;
+            void AddOrientedStitchTri(int v0, int v1, int v2)
+            {
+                if (v0 == v1 || v1 == v2 || v2 == v0) return;
+                Vector3 nrm = Vector3.Cross(mesh.Vertices[v1] - mesh.Vertices[v0], mesh.Vertices[v2] - mesh.Vertices[v0]);
+                if (nrm.LengthSquared() < 1e-8f) return;
+                if (Vector3.Dot(nrm, expectedNorm) < 0f)
+                    mesh.Triangles.Add(new TeddyTriangle(v0, v2, v1));
+                else
+                    mesh.Triangles.Add(new TeddyTriangle(v0, v1, v2));
+            }
+
+            int hStep = 0;
+            int rStep = 0;
+            while (hStep < hCount || rStep < rCount)
+            {
+                int hCurr = holeVerts[hStep % hCount];
+                int hNext = holeVerts[(hStep + 1) % hCount];
+                int rCurr = ring0[(rOffset + rStep) % rCount];
+                int rNext = ring0[(rOffset + rStep + 1) % rCount];
+
+                if (hStep >= hCount)
+                {
+                    AddOrientedStitchTri(hCurr, rNext, rCurr);
+                    rStep++;
+                }
+                else if (rStep >= rCount)
+                {
+                    AddOrientedStitchTri(hCurr, hNext, rCurr);
+                    hStep++;
+                }
+                else
+                {
+                    float fracH = (hStep + 1) / (float)hCount;
+                    float fracR = (rStep + 1) / (float)rCount;
+                    if (fracH <= fracR)
+                    {
+                        AddOrientedStitchTri(hCurr, hNext, rCurr);
+                        hStep++;
+                    }
+                    else
+                    {
+                        AddOrientedStitchTri(hCurr, rNext, rCurr);
+                        rStep++;
+                    }
                 }
             }
         }
@@ -1326,7 +1632,8 @@ namespace PaintLike.Teddy
         private static void BuildExtendedPolylineAndRightHalfPolygon(
             List<PointF> cutPolyScreen,
             out List<PointF> extendedPoly,
-            out List<Vector2> rightHalfPolygon)
+            out List<Vector2> rightHalfPolygon,
+            float extendLen = 3200f)
         {
             PointF p0 = cutPolyScreen[0];
             PointF pN = cutPolyScreen[cutPolyScreen.Count - 1];
@@ -1347,11 +1654,10 @@ namespace PaintLike.Teddy
 
             // Pháp tuyến hướng sang phía bên PHẢI của vector chord trong tọa độ màn hình (X phải, Y xuống): (-chord.Y, chord.X)
             Vector2 rightNormal = new Vector2(-chord.Y, chord.X);
-            const float EXTEND_LEN = 3200f;
-            const float SIDE_DEPTH = 4800f;
+            float sideDepth = MathF.Max(4800f, extendLen * 1.5f);
 
-            PointF extStart = new PointF(p0.X - chord.X * EXTEND_LEN, p0.Y - chord.Y * EXTEND_LEN);
-            PointF extEnd = new PointF(pN.X + chord.X * EXTEND_LEN, pN.Y + chord.Y * EXTEND_LEN);
+            PointF extStart = new PointF(p0.X - chord.X * extendLen, p0.Y - chord.Y * extendLen);
+            PointF extEnd = new PointF(pN.X + chord.X * extendLen, pN.Y + chord.Y * extendLen);
 
             extendedPoly = new List<PointF>(cutPolyScreen.Count + 2);
             extendedPoly.Add(extStart);
@@ -1363,8 +1669,8 @@ namespace PaintLike.Teddy
             {
                 rightHalfPolygon.Add(new Vector2(extendedPoly[i].X, extendedPoly[i].Y));
             }
-            rightHalfPolygon.Add(new Vector2(extEnd.X + rightNormal.X * SIDE_DEPTH, extEnd.Y + rightNormal.Y * SIDE_DEPTH));
-            rightHalfPolygon.Add(new Vector2(extStart.X + rightNormal.X * SIDE_DEPTH, extStart.Y + rightNormal.Y * SIDE_DEPTH));
+            rightHalfPolygon.Add(new Vector2(extEnd.X + rightNormal.X * sideDepth, extEnd.Y + rightNormal.Y * sideDepth));
+            rightHalfPolygon.Add(new Vector2(extStart.X + rightNormal.X * sideDepth, extStart.Y + rightNormal.Y * sideDepth));
         }
 
         /// <summary>
@@ -1667,7 +1973,66 @@ namespace PaintLike.Teddy
                 return;
             }
 
-            // Tạo các trạm trục giữa (Spine Stations) dọc theo đoạn [minS, maxS] của đường cắt
+            // =========================================================================
+            // [TV2-08] ĐÓNG NẮP MẶT CẮT BẰNG 2D STEINER-CDT (Shewchuk [22], Hình 20):
+            // Chiếu vòng biên sectionLoop lên không gian tham số mặt cắt (s, zView * Zoom),
+            // gọi Delaunay2D.TriangulateQualitySteinerCDT để chèn điểm Steiner tâm ngoại tiếp
+            // giúp lưới nắp mặt cắt đều mịn trên cả mặt cắt Zíc-zắc / Cong / Lượn sóng / Bậc thang!
+            // =========================================================================
+            float zScale = MathF.Max(0.35f, camera.Zoom);
+            var cleanLoopVerts = new List<int>(n);
+            var poly2D = new List<Vector2>(n);
+            for (int i = 0; i < n; i++)
+            {
+                Vector2 pt = new Vector2(loopArc[i], loopViewZ[i] * zScale);
+                if (poly2D.Count == 0 || Vector2.DistanceSquared(poly2D[poly2D.Count - 1], pt) > 0.25f)
+                {
+                    poly2D.Add(pt);
+                    cleanLoopVerts.Add(sectionLoop[i]);
+                }
+            }
+            if (poly2D.Count >= 3 && Vector2.DistanceSquared(poly2D[0], poly2D[poly2D.Count - 1]) <= 0.25f)
+            {
+                poly2D.RemoveAt(poly2D.Count - 1);
+                cleanLoopVerts.RemoveAt(cleanLoopVerts.Count - 1);
+            }
+
+            if (cleanLoopVerts.Count >= 3 && !HasSelfIntersection2D(poly2D))
+            {
+                SteinerCdtResult steinerCap = Delaunay2D.TriangulateQualitySteinerCDT(
+                    poly2D,
+                    minAngleDegrees: 19.5f,
+                    maxEdgeLength: MathF.Max(14f, spanS * 0.18f),
+                    allowBoundarySplit: false,
+                    maxSteinerPoints: 96);
+
+                if (steinerCap.Triangles.Count > 0 && steinerCap.BoundaryVertexCount == cleanLoopVerts.Count)
+                {
+                    int bCount = cleanLoopVerts.Count;
+                    var mappedVerts = new int[steinerCap.Vertices.Count];
+                    for (int i = 0; i < bCount; i++)
+                        mappedVerts[i] = cleanLoopVerts[i];
+
+                    for (int i = bCount; i < steinerCap.Vertices.Count; i++)
+                    {
+                        Vector2 st = steinerCap.Vertices[i];
+                        float sVal = Math.Clamp(st.X, minS, maxS);
+                        float viewZ = st.Y / zScale;
+                        PointF screenPt = PointAtPolylineArcLength(extendedPoly, cumArc, sVal);
+                        Vector3 worldPt = camera.ScreenToWorldPoint(screenPt, viewport, viewZ);
+                        mappedVerts[i] = mesh.Vertices.Count;
+                        mesh.Vertices.Add(worldPt);
+                    }
+
+                    foreach (var stTri in steinerCap.Triangles)
+                    {
+                        AddOrientedCapTri(mappedVerts[stTri.V0], mappedVerts[stTri.V1], mappedVerts[stTri.V2]);
+                    }
+                    return;
+                }
+            }
+
+            // Fallback: Dải mặt kẻ Ruled Spine Strip khi hình chiếu (s, z) có nếp gấp chồng tự cắt
             int stationCount = Math.Clamp((int)(spanS / 4.0f) + 1, 8, 96);
             float[] stationArc = new float[stationCount];
             int[] stationVertIdx = new int[stationCount];
@@ -1774,6 +2139,32 @@ namespace PaintLike.Teddy
                 }
             }
             return bestArc;
+        }
+
+        private static bool HasSelfIntersection2D(List<Vector2> poly)
+        {
+            int n = poly.Count;
+            if (n < 4) return false;
+
+            for (int i = 0; i < n; i++)
+            {
+                Vector2 a = poly[i];
+                Vector2 b = poly[(i + 1) % n];
+                for (int j = i + 2; j < n; j++)
+                {
+                    if (i == 0 && j == n - 1) continue;
+                    Vector2 c = poly[j];
+                    Vector2 d = poly[(j + 1) % n];
+
+                    float c1 = Delaunay2D.SignedArea2(a, b, c);
+                    float c2 = Delaunay2D.SignedArea2(a, b, d);
+                    float c3 = Delaunay2D.SignedArea2(c, d, a);
+                    float c4 = Delaunay2D.SignedArea2(c, d, b);
+                    if ((c1 * c2 < -1e-4f) && (c3 * c4 < -1e-4f))
+                        return true;
+                }
+            }
+            return false;
         }
 
         private static void ClipSurfaceLinesAfterCut(
